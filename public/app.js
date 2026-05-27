@@ -88,6 +88,12 @@ async function loadTable() {
 
 // --- Chart ---
 
+function getRangeBounds(range) {
+  const now = new Date();
+  const offsets = { '1h': 3600e3, '6h': 6*3600e3, '24h': 24*3600e3, '7d': 7*86400e3, '30d': 30*86400e3 };
+  return { min: offsets[range] ? new Date(now - offsets[range]) : undefined, max: now };
+}
+
 function renderChart(logs) {
   const labels = logs.map(l => new Date(l.timestamp + 'Z'));
   const downloads = logs.map(l => l.download);
@@ -97,12 +103,8 @@ function renderChart(logs) {
   const ctx = document.getElementById('speed-chart').getContext('2d');
 
   if (chart) {
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = downloads;
-    chart.data.datasets[1].data = uploads;
-    chart.data.datasets[2].data = pings;
-    chart.update('none');
-    return;
+    chart.destroy();
+    chart = null;
   }
 
   chart = new Chart(ctx, {
@@ -139,7 +141,7 @@ function renderChart(logs) {
           tension: 0.3,
           pointRadius: logs.length > 50 ? 0 : 3,
           borderDash: [4, 3],
-          yAxisID: 'yPing',
+          yAxisID: 'ySpeed',
         },
       ],
     },
@@ -165,6 +167,7 @@ function renderChart(logs) {
       scales: {
         x: {
           type: 'time',
+          ...getRangeBounds(currentRange),
           grid: { color: '#1e2130' },
           ticks: { color: '#7c8498', maxRotation: 0 },
         },
@@ -172,13 +175,7 @@ function renderChart(logs) {
           position: 'left',
           grid: { color: '#1e2130' },
           ticks: { color: '#7c8498' },
-          title: { display: true, text: 'Mbps', color: '#7c8498', font: { size: 11 } },
-        },
-        yPing: {
-          position: 'right',
-          grid: { drawOnChartArea: false },
-          ticks: { color: '#fb923c' },
-          title: { display: true, text: 'ms', color: '#fb923c', font: { size: 11 } },
+          title: { display: true, text: 'Mbps / ms', color: '#7c8498', font: { size: 11 } },
         },
       },
     },
