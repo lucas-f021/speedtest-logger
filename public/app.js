@@ -94,6 +94,30 @@ function getRangeBounds(range) {
   return { min: offsets[range] ? new Date(now - offsets[range]) : undefined, max: now };
 }
 
+function getTimeAxis(range) {
+  const cfg = {
+    '1h':  { unit: 'minute', stepSize: 10 },
+    '6h':  { unit: 'hour',   stepSize: 1  },
+    '24h': { unit: 'hour',   stepSize: 4  },
+    '7d':  { unit: 'day',    stepSize: 1  },
+    '30d': { unit: 'day',    stepSize: 5  },
+    'all': { unit: 'week',   stepSize: 1  },
+  };
+  const { unit, stepSize } = cfg[range] || cfg['24h'];
+  return {
+    time: {
+      unit,
+      stepSize,
+      displayFormats: {
+        minute: 'h:mm a',
+        hour:   'h a',
+        day:    'EEE M/d',
+        week:   'MMM d',
+      },
+    },
+  };
+}
+
 function renderChart(logs) {
   const labels = logs.map(l => new Date(l.timestamp + 'Z'));
   const downloads = logs.map(l => l.download);
@@ -168,6 +192,7 @@ function renderChart(logs) {
         x: {
           type: 'time',
           ...getRangeBounds(currentRange),
+          ...getTimeAxis(currentRange),
           grid: { color: '#1e2130' },
           ticks: { color: '#7c8498', maxRotation: 0 },
         },
