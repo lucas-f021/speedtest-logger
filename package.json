@@ -1,0 +1,15 @@
+{
+  "name": "speedtest-logger",
+  "version": "1.0.0",
+  "description": "Self-hosted internet speed test logger with web UI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "better-sqlite3": "^11.0.0",
+    "speedtest-net": "^2.2.0",
+    "node-cron": "^3.0.0"
+  }
+}
