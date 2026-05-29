@@ -2,3 +2,9 @@ node_modules/
 speedtest.db
 *.db
 .env
+
+# Local / runtime files (not part of the shared project)
+.claude/
+*.db-shm
+*.db-wal
+DAD-NOTES.md

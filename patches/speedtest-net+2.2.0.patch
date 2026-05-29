@@ -1,0 +1,18 @@
+diff --git a/node_modules/speedtest-net/index.js b/node_modules/speedtest-net/index.js
+index f2ceb1d..e05cc16 100644
+--- a/node_modules/speedtest-net/index.js
++++ b/node_modules/speedtest-net/index.js
+@@ -64,6 +64,13 @@ const platforms = [
+     bin: 'macosx',
+     sha: '8d0af8a81e668fbf04b7676f173016976131877e9fbdcd0a396d4e6b70a5e8f4'
+   },
++  {
++    platform: 'darwin',
++    arch: 'arm64',
++    pkg: 'macosx.tgz',
++    bin: 'macosx',
++    sha: '8d0af8a81e668fbf04b7676f173016976131877e9fbdcd0a396d4e6b70a5e8f4'
++  },
+   {
+     platform: 'win32',
+     arch: 'x64',
