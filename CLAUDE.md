@@ -12,19 +12,23 @@ A self-hosted internet speed test logging application that runs on a Windows 11 
 - **Frontend:** Plain HTML + CSS + vanilla JavaScript (no build step)
 - **Charting:** Chart.js with `chartjs-adapter-date-fns` for time-series axes
 - **Process Manager (optional):** pm2 for keeping the server alive across reboots
+- **Dependency patching:** `patch-package` adds Apple Silicon (`darwin-arm64`) support to `speedtest-net`, applied automatically via a `postinstall` hook
+- **Dev workflow:** `npm run dev` runs the server under `node --watch` for auto-restart on file changes
 
 ## Project Structure
 ```
 speedtest-logger/
 ├── server.js              # Express server, API routes, cron scheduler
-├── db.js                  # SQLite database setup and query helpers
-├── speedtest.js           # Speed test runner (wraps speedtest-net)
+├── db.js                  # SQLite setup, query helpers, settings store
+├── speedtest.js           # Speed test runner (wraps speedtest-net; accepts a server id)
+├── servers.js             # Vetted server registry + "Fastest" latency picker
+├── patches/               # patch-package patches (e.g. speedtest-net arm64 support)
 ├── package.json
 ├── CLAUDE.md
 └── public/                # Static frontend served by Express
-    ├── index.html         # Main page layout
-    ├── style.css          # Styling
-    └── app.js             # Frontend logic (fetch API, render chart + table)
+    ├── index.html         # Layout: left sidebar (server selector) + main dashboard
+    ├── style.css          # Styling (fixed-viewport dashboard, scrollable table)
+    └── app.js             # Frontend logic (server selector, chart + table)
 ```
 
 ## Database Schema
@@ -46,6 +50,12 @@ CREATE TABLE IF NOT EXISTS speed_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
+
+-- Key/value store for app settings, e.g. selected_server = '1774' | '74553' | '29122' | 'fastest'
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 ```
 
 ## API Endpoints
@@ -74,10 +84,26 @@ Returns aggregate stats for a given range:
 ### `GET /api/status`
 Health check. Returns `{ running: true, nextScheduledTest: "ISO timestamp", dbSize: number }`.
 
+### `GET /api/server`
+Returns the current server selection and available options.
+Response: `{ selected: "1774" | "74553" | "29122" | "fastest", options: [{ key, name, location }, ...] }`
+
+### `POST /api/server`
+Sets the server used for future tests. Body: `{ selection: "<key>" }` where key is one of the three server ids or `"fastest"`. Persists to the `settings` table. Returns `{ success: true, selected }`, or `400` `{ success: false, error }` for an invalid key.
+
 ## Frontend UI Requirements
 
 ### Layout
-Single-page app. Dark theme preferred (easy on the eyes for a monitoring dashboard). Responsive but optimized for desktop since it's a self-hosted tool.
+Single-page app, dark theme, optimized for desktop. **Fixed-viewport dashboard:** the page itself does not scroll — a left **sidebar** holds the server selector, and the main area splits the remaining height between the chart and a **scrollable** log table (only the table body scrolls; its header stays pinned). Falls back to normal vertical scrolling on narrow/phone widths.
+
+### Sidebar — Server Selector
+The left sidebar lists four choices and lets the user pick which Ookla server tests run against:
+- **Comcast — Boston, MA** (id 1774) — the default on first run
+- **GONETSPEED — Providence, RI** (id 74553)
+- **i3 Broadband — Warren, RI** (id 29122)
+- **Fastest** — before each test, a quick TCP-latency probe of the three picks the lowest-latency one
+
+Selecting an option saves it (via `POST /api/server`) for future tests only — it does **not** trigger a test. The choice persists across restarts (stored in the `settings` table; Comcast is only the initial default). The header shows a "via …" indicator of the active server, and the log table's Server column records which server each result actually used.
 
 ### Components
 
@@ -116,8 +142,13 @@ Single-page app. Dark theme preferred (easy on the eyes for a monitoring dashboa
 - Log test start/completion to console with timestamps.
 - If a test is already running (manual or scheduled), skip/queue rather than running concurrent tests. Use a simple mutex/flag.
 
+### Server Selection (`servers.js`)
+- A fixed registry of three vetted local servers (Comcast/Boston `1774`, GONETSPEED/Providence `74553`, i3/Warren `29122`) plus a `"fastest"` option, each with host/port for latency probing.
+- Before each test, `server.js` reads `selected_server` from settings (default Comcast). For `"fastest"`, `pickFastestServer()` does a cheap TCP-connect latency probe to all three and returns the lowest (falls back to the default if all are unreachable).
+- The resolved server id is passed to the runner, which hands Ookla a `-s <id>` flag to pin the test.
+
 ### Speed Test Runner (`speedtest.js`)
-- Wrap `speedtest-net` in a function that returns a normalized result object.
+- `runSpeedTest(serverId)` wraps `speedtest-net`, passing the optional server id, and returns a normalized result object.
 - Handle errors gracefully — if the test fails (network down, timeout), log the error to console but do NOT crash the server. Optionally insert a row with null values and an error note.
 - Convert speeds from bytes/sec (speedtest-net default) to Mbps: `(bytes * 8) / 1_000_000`.
 
@@ -141,9 +172,12 @@ npm install
 
 ### Run
 ```bash
-node server.js
+npm run dev    # development: auto-restarts on file changes (node --watch)
+npm start      # production: plain `node server.js`
 ```
 Server starts on `http://localhost:3000` (configurable via `PORT` env var).
+
+> **Apple Silicon (arm64 Macs):** `speedtest-net@2.2.0` doesn't ship an arm64 build by default. A `patch-package` patch in `patches/` adds it and is applied automatically by the `postinstall` hook on `npm install` — no manual step needed.
 
 ### Run Persistently (survive reboots)
 ```bash
@@ -186,8 +220,11 @@ pm2 startup   # follow instructions to set up Windows service
   "dependencies": {
     "express": "^4.18.0",
     "better-sqlite3": "^11.0.0",
-    "speedtest-net": "^4.0.0",
+    "speedtest-net": "^2.2.0",
     "node-cron": "^3.0.0"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
   }
 }
 ```

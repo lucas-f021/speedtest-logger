@@ -1,7 +1,9 @@
 const speedTest = require('speedtest-net');
 
-async function runSpeedTest() {
-  const result = await speedTest({ acceptLicense: true, acceptGdpr: true });
+async function runSpeedTest(serverId) {
+  const options = { acceptLicense: true, acceptGdpr: true };
+  if (serverId) options.serverId = serverId;
+  const result = await speedTest(options);
 
   const toMbps = (bytesPerSec) => bytesPerSec
     ? Math.round((bytesPerSec * 8) / 1_000_000 * 100) / 100

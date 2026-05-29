@@ -24,6 +24,11 @@ function getDb() {
         source TEXT NOT NULL DEFAULT 'scheduled'
       );
       CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
     `);
   }
   return db;
@@ -77,6 +82,18 @@ function getDbSize() {
   return result ? result.size : 0;
 }
 
+function getSetting(key) {
+  const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? row.value : null;
+}
+
+function setSetting(key, value) {
+  getDb().prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, String(value));
+}
+
 function closeDb() {
   if (db) {
     db.close();
@@ -96,4 +113,4 @@ function buildTimeFilter(range) {
   return filters[range] || filters['24h'];
 }
 
-module.exports = { insertLog, getLogs, getLatest, getStats, getDbSize, closeDb };
+module.exports = { insertLog, getLogs, getLatest, getStats, getDbSize, getSetting, setSetting, closeDb };

@@ -3,8 +3,11 @@ let chart = null;
 
 // --- Init ---
 
+let serverOptions = [];
+
 document.addEventListener('DOMContentLoaded', () => {
   loadAll();
+  loadServerSelector();
   setupRangeButtons();
   setupTestNowButton();
   setInterval(pollStatus, 5000);
@@ -51,6 +54,63 @@ function setupTestNowButton() {
       setStatusIdle();
     }
   });
+}
+
+// --- Server selector ---
+
+async function loadServerSelector() {
+  try {
+    const res = await fetch('/api/server');
+    const data = await res.json();
+    serverOptions = data.options;
+    renderServerOptions(data.options, data.selected);
+    updateActiveServerLabel(data.selected);
+  } catch (_) {}
+}
+
+function renderServerOptions(options, selected) {
+  const container = document.getElementById('server-options');
+  container.innerHTML = options.map(o => `
+    <button class="server-option ${o.key === selected ? 'active' : ''}" data-key="${escHtml(o.key)}">
+      <span class="server-radio"></span>
+      <span class="server-info">
+        <span class="server-name">${escHtml(o.name)}</span>
+        <span class="server-loc">${escHtml(o.location)}</span>
+      </span>
+    </button>
+  `).join('');
+  container.querySelectorAll('.server-option').forEach(btn => {
+    btn.addEventListener('click', () => selectServer(btn.dataset.key));
+  });
+}
+
+async function selectServer(key) {
+  try {
+    const res = await fetch('/api/server', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selection: key }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      renderServerOptions(serverOptions, data.selected);
+      updateActiveServerLabel(data.selected);
+      const opt = serverOptions.find(o => o.key === data.selected);
+      const label = key === 'fastest' ? 'Fastest (auto-pick)' : `${opt.name} — ${opt.location}`;
+      showToast(`Future tests will use: ${label}`, 'success');
+    } else {
+      showToast(data.error || 'Could not change server', 'error');
+    }
+  } catch (_) {
+    showToast('Could not reach server', 'error');
+  }
+}
+
+function updateActiveServerLabel(selected) {
+  const el = document.getElementById('active-server');
+  const opt = serverOptions.find(o => o.key === selected);
+  if (!opt) { el.textContent = ''; return; }
+  el.textContent = selected === 'fastest' ? 'via Fastest (auto)' : `via ${opt.name} — ${opt.location}`;
 }
 
 // --- Data loading ---
