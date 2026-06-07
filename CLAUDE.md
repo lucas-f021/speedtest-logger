@@ -13,6 +13,7 @@ A self-hosted internet speed test logging application that runs on a Windows 11 
 - **Charting:** Chart.js with `chartjs-adapter-date-fns` for time-series axes
 - **Process Manager (optional):** pm2 for keeping the server alive across reboots
 - **Dependency patching:** `patch-package` adds Apple Silicon (`darwin-arm64`) support to `speedtest-net`, applied automatically via a `postinstall` hook
+- **Native-dep override:** `speedtest-net` eagerly pulls in the native `lzma-native` (via `decompress-tarxz`) for `.xz` archives it never downloads on any supported platform (Windows uses `.zip`, macOS/Linux use `.tgz`). `lzma-native@4` has no prebuilt binary for Node 22 and won't compile without a C++ toolchain, breaking `npm ci`. A `package.json` `overrides` entry redirects `decompress-tarxz` → pure-JS `decompress-targz`, dropping `lzma-native` from the tree so installs work everywhere (incl. Windows/Node 22) with no compiler.
 - **Dev workflow:** `npm run dev` runs the server under `node --watch` for auto-restart on file changes
 
 ## Project Structure

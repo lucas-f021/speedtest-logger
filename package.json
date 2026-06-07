@@ -16,5 +16,8 @@
   },
   "devDependencies": {
     "patch-package": "^8.0.1"
+  },
+  "overrides": {
+    "decompress-tarxz": "npm:decompress-targz@^4.1.1"
   }
 }
