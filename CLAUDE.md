@@ -188,6 +188,10 @@ pm2 save
 pm2 startup   # follow instructions to set up Windows service
 ```
 
+> **Production note:** the live deployment on the home server uses **NSSM** (not pm2) to run this as the
+> `speedtest-logger` Windows service on port 3000 — see `DEPLOY-AS-SERVICE.md` for the complete,
+> filled-in runbook (deploy key, service install, firewall, reboot test).
+
 ### Environment Variables (optional)
 - `PORT` — server port (default: `3000`)
 - `CRON_SCHEDULE` — cron expression (default: `0 * * * *` = every hour)
