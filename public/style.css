@@ -30,7 +30,7 @@ body {
 .layout { display: flex; height: 100vh; overflow: hidden; }
 
 .sidebar {
-  width: 240px;
+  width: 300px;
   flex-shrink: 0;
   background: var(--bg-card);
   border-right: 1px solid var(--border);
@@ -39,6 +39,16 @@ body {
   top: 0;
   height: 100vh;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-version {
+  margin-top: auto;
+  padding-top: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .sidebar-brand {
@@ -114,7 +124,7 @@ body {
 
 .aw-grid {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   column-gap: 12px;
   row-gap: 3px;
   align-items: baseline;

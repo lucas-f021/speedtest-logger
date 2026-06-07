@@ -5,6 +5,7 @@ const { runSpeedTest } = require('./speedtest');
 const { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb } = require('./db');
 const { DEFAULT_SERVER_KEY, FASTEST_KEY, getServerByKey, isValidSelection, listOptions, pickFastestServer } = require('./servers');
 const { DEFAULT_SCHEDULE_KEY, getCronForKey, isValidScheduleKey, listScheduleOptions } = require('./schedules');
+const pkg = require('./package.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -60,6 +61,10 @@ app.get('/api/status', (req, res) => {
     nextScheduledTest: nextScheduledTest ? nextScheduledTest.toISOString() : null,
     dbSize: getDbSize(),
   });
+});
+
+app.get('/api/version', (req, res) => {
+  res.json({ version: pkg.version });
 });
 
 app.get('/api/server', (req, res) => {

@@ -8,10 +8,10 @@ A self-hosted internet speed test logging application that runs on a Windows 11 
 - **Server:** Express.js
 - **Database:** SQLite via `better-sqlite3` (synchronous, fast, no native build issues on Windows)
 - **Speed Test Engine:** `speedtest-net` (Ookla-based CLI wrapper)
-- **Scheduling:** `node-cron` (runs speed test every hour)
+- **Scheduling:** `node-cron` (configurable cadence via the Schedule picker; hourly by default)
 - **Frontend:** Plain HTML + CSS + vanilla JavaScript (no build step)
 - **Charting:** Chart.js with `chartjs-adapter-date-fns` for time-series axes
-- **Process Manager (optional):** pm2 for keeping the server alive across reboots
+- **Process manager / deploy:** **NSSM** Windows service in production + one-click `scripts/deploy.bat` (rollback-safe `update.ps1`); pm2 also works
 - **Dependency patching:** `patch-package` adds Apple Silicon (`darwin-arm64`) support to `speedtest-net`, applied automatically via a `postinstall` hook
 - **Native-dep override:** `speedtest-net` eagerly pulls in the native `lzma-native` (via `decompress-tarxz`) for `.xz` archives it never downloads on any supported platform (Windows uses `.zip`, macOS/Linux use `.tgz`). `lzma-native@4` has no prebuilt binary for Node 22 and won't compile without a C++ toolchain, breaking `npm ci`. A `package.json` `overrides` entry redirects `decompress-tarxz` → pure-JS `decompress-targz`, dropping `lzma-native` from the tree so installs work everywhere (incl. Windows/Node 22) with no compiler.
 - **Dev workflow:** `npm run dev` runs the server under `node --watch` for auto-restart on file changes
@@ -19,17 +19,22 @@ A self-hosted internet speed test logging application that runs on a Windows 11 
 ## Project Structure
 ```
 speedtest-logger/
-├── server.js              # Express server, API routes, cron scheduler
-├── db.js                  # SQLite setup, query helpers, settings store
+├── server.js              # Express server, all API routes, re-schedulable cron scheduler, graceful shutdown
+├── db.js                  # SQLite setup; logs/stats/analytics query helpers; key-value settings store
 ├── speedtest.js           # Speed test runner (wraps speedtest-net; accepts a server id)
 ├── servers.js             # Vetted server registry + "Fastest" latency picker
+├── schedules.js           # Cron preset registry (30m / 1h / 2h / 6h / 12h / daily)
 ├── patches/               # patch-package patches (e.g. speedtest-net arm64 support)
-├── package.json
-├── CLAUDE.md
+├── scripts/               # update.ps1 (rollback-safe deploy) + deploy.bat (one-click wrapper)
+├── package.json           # deps + the decompress-tarxz override; "version" is the app version
+├── CLAUDE.md              # this file
+├── ARCHITECTURE.md        # architecture + tech-stack overview
+├── BACKLOG.md             # nice-to-have ideas
+├── SPEEDTEST-DEPLOY.md    # canonical NSSM / one-click deploy runbook
 └── public/                # Static frontend served by Express
-    ├── index.html         # Layout: left sidebar (server selector) + main dashboard
+    ├── index.html         # Layout: left sidebar (server / analytics / schedule / version) + main dashboard
     ├── style.css          # Styling (fixed-viewport dashboard, scrollable table)
-    └── app.js             # Frontend logic (server selector, chart + table)
+    └── app.js             # Frontend logic (selectors, chart + table + analytics, version)
 ```
 
 ## Database Schema
@@ -52,7 +57,9 @@ CREATE TABLE IF NOT EXISTS speed_logs (
 
 CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
 
--- Key/value store for app settings, e.g. selected_server = '1774' | '74553' | '29122' | 'fastest'
+-- Key/value store for app settings:
+--   selected_server = '1774' | '74553' | '29122' | 'fastest'
+--   schedule        = '30m' | '1h' | '2h' | '6h' | '12h' | '1d'
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -60,6 +67,9 @@ CREATE TABLE IF NOT EXISTS settings (
 ```
 
 ## API Endpoints
+
+### `GET /health`
+Lightweight liveness check used by the deploy scripts. Returns `{ ok: true }`.
 
 ### `GET /api/logs`
 Returns speed test logs. Supports query params for filtering:
@@ -82,8 +92,12 @@ Returns aggregate stats for a given range:
 - `?range=24h|7d|30d|all`
 - Response: `{ avgDownload, avgUpload, avgPing, minDownload, maxDownload, minUpload, maxUpload, totalTests }`
 
+### `GET /api/analytics`
+Rolling-window analytics for the sidebar (no params). For each of `day` (24h), `week` (7d), `month` (30d):
+`{ count, download: {avg, median, stdev}, upload: {…}, ping: {…} }`. Median + stdev are computed in JS (SQLite has neither).
+
 ### `GET /api/status`
-Health check. Returns `{ running: true, nextScheduledTest: "ISO timestamp", dbSize: number }`.
+Returns `{ running, nextScheduledTest: "ISO timestamp", dbSize }` — used to drive the running indicator.
 
 ### `GET /api/server`
 Returns the current server selection and available options.
@@ -91,6 +105,14 @@ Response: `{ selected: "1774" | "74553" | "29122" | "fastest", options: [{ key, 
 
 ### `POST /api/server`
 Sets the server used for future tests. Body: `{ selection: "<key>" }` where key is one of the three server ids or `"fastest"`. Persists to the `settings` table. Returns `{ success: true, selected }`, or `400` `{ success: false, error }` for an invalid key.
+
+### `GET /api/schedule` · `POST /api/schedule`
+Get/set how often the scheduled test runs. `GET` → `{ selected, options: [{key,label}] }`. `POST` body
+`{ schedule: "<key>" }` (one of `30m|1h|2h|6h|12h|1d`) persists to `settings` and **re-applies the cron job
+live** (no restart); `400` on an invalid key.
+
+### `GET /api/version`
+Returns `{ version }` read from `package.json` (shown in the sidebar footer).
 
 ## Frontend UI Requirements
 
@@ -105,6 +127,12 @@ The left sidebar lists four choices and lets the user pick which Ookla server te
 - **Fastest** — before each test, a quick TCP-latency probe of the three picks the lowest-latency one
 
 Selecting an option saves it (via `POST /api/server`) for future tests only — it does **not** trigger a test. The choice persists across restarts (stored in the `settings` table; Comcast is only the initial default). The header shows a "via …" indicator of the active server, and the log table's Server column records which server each result actually used.
+
+### Sidebar — Analytics
+Below the server selector: rolling **avg / median / stdev** of download, upload, and ping for three windows — **Day (24h) / Week (7d) / Month (30d)** — fed by `GET /api/analytics`.
+
+### Sidebar — Schedule & version
+A dropdown sets how often the scheduled test runs (30m / 1h / 2h / 6h / 12h / daily), backed by `GET|POST /api/schedule`; the choice persists and is applied live. The app version (`vX.Y.Z`, from `package.json`) is pinned at the bottom of the sidebar.
 
 ### Components
 
@@ -125,7 +153,8 @@ Selecting an option saves it (via `POST /api/server`) for future tests only — 
 - Three lines: Download (blue/cyan), Upload (green), Ping (orange/red)
 - X-axis: time (auto-formatted based on range)
 - Time range selector buttons: 1h, 6h, 24h, 7d, 30d, All
-- Tooltip showing full details on hover
+- **Mean + median reference lines** for download (dashed/dotted; values track the selected range)
+- Tooltip showing full details on hover, with each metric tagged by line style (solid / dashed / dotted)
 - Smooth curves, filled area under download/upload lines (low opacity)
 
 #### Log Table
@@ -138,7 +167,7 @@ Selecting an option saves it (via `POST /api/server`) for future tests only — 
 ## Server Behavior
 
 ### Cron Scheduling
-- Use `node-cron` to schedule a speed test every hour on the hour: `'0 * * * *'`
+- Use `node-cron`; cadence is user-configurable via the Schedule picker (`schedules.js` presets, persisted in `settings`, default hourly `'0 * * * *'`). The cron task is re-applied live on change — no restart.
 - On server startup, check when the last test was. If more than 1 hour ago, run one immediately.
 - Log test start/completion to console with timestamps.
 - If a test is already running (manual or scheduled), skip/queue rather than running concurrent tests. Use a simple mutex/flag.
@@ -189,12 +218,12 @@ pm2 startup   # follow instructions to set up Windows service
 ```
 
 > **Production note:** the live deployment on the home server uses **NSSM** (not pm2) to run this as the
-> `speedtest-logger` Windows service on port 3000 — see `DEPLOY-AS-SERVICE.md` for the complete,
-> filled-in runbook (deploy key, service install, firewall, reboot test).
+> `speedtest-logger` Windows service on port 3000 — see `SPEEDTEST-DEPLOY.md` for the complete,
+> filled-in runbook (deploy key, service install, firewall, one-click `deploy.bat`, reboot test).
 
 ### Environment Variables (optional)
 - `PORT` — server port (default: `3000`)
-- `CRON_SCHEDULE` — cron expression (default: `0 * * * *` = every hour)
+- `CRON_SCHEDULE` — *(legacy; superseded by the in-app Schedule picker, which persists to `settings`; default hourly)*
 - `DB_PATH` — path to SQLite file (default: `./speedtest.db`)
 
 ## Key Implementation Notes
@@ -230,6 +259,9 @@ pm2 startup   # follow instructions to set up Windows service
   },
   "devDependencies": {
     "patch-package": "^8.0.1"
+  },
+  "overrides": {
+    "decompress-tarxz": "npm:decompress-targz@^4.1.1"
   }
 }
 ```

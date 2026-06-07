@@ -8,3 +8,4 @@ speedtest.db
 *.db-shm
 *.db-wal
 DAD-NOTES.md
+.DS_Store

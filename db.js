@@ -92,6 +92,14 @@ function median(nums) {
   return Math.round(m * 10) / 10;
 }
 
+// Population standard deviation (we have every measurement in the window, not a sample).
+function stdev(nums) {
+  if (!nums.length) return null;
+  const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
+  const variance = nums.reduce((a, b) => a + (b - mean) ** 2, 0) / nums.length;
+  return Math.round(Math.sqrt(variance) * 10) / 10;
+}
+
 function windowStats(range) {
   const rows = getDb()
     .prepare(`SELECT download, upload, ping FROM speed_logs ${buildTimeFilter(range)}`)
@@ -100,9 +108,9 @@ function windowStats(range) {
   const dl = col('download'), up = col('upload'), pg = col('ping');
   return {
     count: dl.length,
-    download: { avg: avg(dl), median: median(dl) },
-    upload: { avg: avg(up), median: median(up) },
-    ping: { avg: avg(pg), median: median(pg) },
+    download: { avg: avg(dl), median: median(dl), stdev: stdev(dl) },
+    upload: { avg: avg(up), median: median(up), stdev: stdev(up) },
+    ping: { avg: avg(pg), median: median(pg), stdev: stdev(pg) },
   };
 }
 

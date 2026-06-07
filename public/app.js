@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupScheduleSelector();
   setupRangeButtons();
   setupTestNowButton();
+  loadVersion();
   setInterval(pollStatus, 5000);
 });
 
@@ -148,6 +149,17 @@ function setupScheduleSelector() {
   });
 }
 
+// --- App version ---
+
+async function loadVersion() {
+  try {
+    const res = await fetch('/api/version');
+    const data = await res.json();
+    const el = document.getElementById('app-version');
+    if (el && data.version) el.textContent = `v${data.version}`;
+  } catch (_) {}
+}
+
 // --- Data loading ---
 
 async function loadAll() {
@@ -199,7 +211,8 @@ function renderAnalytics(data) {
       return `
           <span class="aw-metric">${m.label}</span>
           <span class="aw-num">${fmtStat(stat.avg)}</span>
-          <span class="aw-num">${fmtStat(stat.median)}</span>`;
+          <span class="aw-num">${fmtStat(stat.median)}</span>
+          <span class="aw-num">${fmtStat(stat.stdev)}</span>`;
     }).join('');
     return `
       <div class="analytics-window">
@@ -210,7 +223,8 @@ function renderAnalytics(data) {
         <div class="aw-grid">
           <span></span>
           <span class="aw-col-h">avg</span>
-          <span class="aw-col-h">med</span>${rows}
+          <span class="aw-col-h">med</span>
+          <span class="aw-col-h">sd</span>${rows}
         </div>
       </div>`;
   }).join('');
@@ -264,11 +278,23 @@ function getTimeAxis(range) {
   };
 }
 
+function medianOf(nums) {
+  if (!nums.length) return null;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 function renderChart(logs) {
   const labels = logs.map(l => new Date(l.timestamp + 'Z'));
   const downloads = logs.map(l => l.download);
   const uploads = logs.map(l => l.upload);
   const pings = logs.map(l => l.ping);
+
+  // Horizontal reference lines: mean + median of the download values currently shown.
+  const dlValues = downloads.filter(v => v != null);
+  const meanDownload = dlValues.length ? dlValues.reduce((a, b) => a + b, 0) / dlValues.length : null;
+  const medianDownload = medianOf(dlValues);
 
   const ctx = document.getElementById('speed-chart').getContext('2d');
 
@@ -311,6 +337,28 @@ function renderChart(logs) {
           tension: 0.3,
           pointRadius: logs.length > 50 ? 0 : 3,
           borderDash: [4, 3],
+          yAxisID: 'yPing',
+        },
+        {
+          label: 'Avg ↓',
+          data: labels.map(() => (meanDownload != null ? Math.round(meanDownload * 100) / 100 : null)),
+          borderColor: 'rgba(56,189,248,0.65)',
+          borderWidth: 1.5,
+          borderDash: [8, 4],
+          pointRadius: 0,
+          fill: false,
+          tension: 0,
+          yAxisID: 'ySpeed',
+        },
+        {
+          label: 'Median ↓',
+          data: labels.map(() => (medianDownload != null ? Math.round(medianDownload * 100) / 100 : null)),
+          borderColor: 'rgba(250,204,21,0.75)',
+          borderWidth: 1.5,
+          borderDash: [2, 3],
+          pointRadius: 0,
+          fill: false,
+          tension: 0,
           yAxisID: 'ySpeed',
         },
       ],
@@ -328,9 +376,32 @@ function renderChart(logs) {
           borderColor: '#2a2d3e',
           borderWidth: 1,
           titleColor: '#e2e8f0',
-          bodyColor: '#7c8498',
+          bodyColor: '#e2e8f0',
+          padding: 12,
+          boxWidth: 16,
+          boxHeight: 16,
+          boxPadding: 6,
+          bodySpacing: 6,
+          titleFont: { size: 13, weight: '600' },
+          bodyFont: { size: 14 },
           callbacks: {
             title: (items) => new Date(items[0].parsed.x).toLocaleString(),
+            // Fill the swatch with the actual line color (not the faint area fill).
+            labelColor: (ctx) => ({
+              borderColor: ctx.dataset.borderColor,
+              backgroundColor: ctx.dataset.borderColor,
+              borderWidth: 2,
+              borderRadius: 2,
+            }),
+            // Show the line style next to each metric so same-color lines are distinguishable.
+            label: (ctx) => {
+              const dash = ctx.dataset.borderDash;
+              const style = !dash || !dash.length
+                ? 'solid'
+                : (dash[0] >= 6 ? 'dashed' : (dash[0] <= 2 ? 'dotted' : 'dash-dot'));
+              const v = ctx.parsed.y;
+              return `${ctx.dataset.label} [${style}]: ${v == null ? '—' : v}`;
+            },
           },
         },
       },
@@ -346,7 +417,13 @@ function renderChart(logs) {
           position: 'left',
           grid: { color: '#1e2130' },
           ticks: { color: '#7c8498' },
-          title: { display: true, text: 'Mbps / ms', color: '#7c8498', font: { size: 11 } },
+          title: { display: true, text: 'Mbps', color: '#7c8498', font: { size: 11 } },
+        },
+        yPing: {
+          position: 'right',
+          grid: { drawOnChartArea: false },
+          ticks: { color: '#7c8498' },
+          title: { display: true, text: 'Ping (ms)', color: '#7c8498', font: { size: 11 } },
         },
       },
     },
