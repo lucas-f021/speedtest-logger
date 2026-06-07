@@ -8,6 +8,8 @@ let serverOptions = [];
 document.addEventListener('DOMContentLoaded', () => {
   loadAll();
   loadServerSelector();
+  loadSchedule();
+  setupScheduleSelector();
   setupRangeButtons();
   setupTestNowButton();
   setInterval(pollStatus, 5000);
@@ -113,10 +115,43 @@ function updateActiveServerLabel(selected) {
   el.textContent = selected === 'fastest' ? 'via Fastest (auto)' : `via ${opt.name} — ${opt.location}`;
 }
 
+// --- Schedule selector ---
+
+async function loadSchedule() {
+  try {
+    const res = await fetch('/api/schedule');
+    const data = await res.json();
+    const sel = document.getElementById('schedule-select');
+    sel.innerHTML = data.options.map(o => `<option value="${escHtml(o.key)}">${escHtml(o.label)}</option>`).join('');
+    sel.value = data.selected;
+  } catch (_) {}
+}
+
+function setupScheduleSelector() {
+  const sel = document.getElementById('schedule-select');
+  sel.addEventListener('change', async () => {
+    try {
+      const res = await fetch('/api/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule: sel.value }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Scheduled tests: ${sel.options[sel.selectedIndex].text}`, 'success');
+      } else {
+        showToast(data.error || 'Could not change schedule', 'error');
+      }
+    } catch (_) {
+      showToast('Could not reach server', 'error');
+    }
+  });
+}
+
 // --- Data loading ---
 
 async function loadAll() {
-  await Promise.all([loadStats(), loadChart(), loadTable()]);
+  await Promise.all([loadStats(), loadChart(), loadTable(), loadAnalytics()]);
 }
 
 async function loadStats() {
@@ -128,6 +163,57 @@ async function loadStats() {
     document.getElementById('stat-ping').textContent = s.avgPing ?? '—';
     document.getElementById('stat-total').textContent = s.totalTests ?? '—';
   } catch (_) {}
+}
+
+// --- Sidebar analytics (rolling avg + median for 24h / 7d / 30d) ---
+
+const ANALYTICS_WINDOWS = [
+  { key: 'day',   label: 'Day',   sub: '24h' },
+  { key: 'week',  label: 'Week',  sub: '7d'  },
+  { key: 'month', label: 'Month', sub: '30d' },
+];
+
+const ANALYTICS_METRICS = [
+  { key: 'download', label: '↓ Mbps' },
+  { key: 'upload',   label: '↑ Mbps' },
+  { key: 'ping',     label: 'ping ms' },
+];
+
+async function loadAnalytics() {
+  try {
+    const res = await fetch('/api/analytics');
+    renderAnalytics(await res.json());
+  } catch (_) {}
+}
+
+function fmtStat(n) {
+  return n == null ? '—' : n.toFixed(1);
+}
+
+function renderAnalytics(data) {
+  const container = document.getElementById('analytics');
+  container.innerHTML = ANALYTICS_WINDOWS.map(w => {
+    const win = data[w.key] || {};
+    const rows = ANALYTICS_METRICS.map(m => {
+      const stat = win[m.key] || {};
+      return `
+          <span class="aw-metric">${m.label}</span>
+          <span class="aw-num">${fmtStat(stat.avg)}</span>
+          <span class="aw-num">${fmtStat(stat.median)}</span>`;
+    }).join('');
+    return `
+      <div class="analytics-window">
+        <div class="aw-head">
+          <span class="aw-title">${w.label} · ${w.sub}</span>
+          <span class="aw-count">n ${win.count ?? 0}</span>
+        </div>
+        <div class="aw-grid">
+          <span></span>
+          <span class="aw-col-h">avg</span>
+          <span class="aw-col-h">med</span>${rows}
+        </div>
+      </div>`;
+  }).join('');
 }
 
 async function loadChart() {

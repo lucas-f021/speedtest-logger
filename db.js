@@ -77,6 +77,43 @@ function getStats(range = '24h') {
   `).get();
 }
 
+// --- Rolling analytics: avg + median of download/upload/ping over 24h / 7d / 30d ---
+
+function avg(nums) {
+  if (!nums.length) return null;
+  return Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 10) / 10;
+}
+
+function median(nums) {
+  if (!nums.length) return null;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const m = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return Math.round(m * 10) / 10;
+}
+
+function windowStats(range) {
+  const rows = getDb()
+    .prepare(`SELECT download, upload, ping FROM speed_logs ${buildTimeFilter(range)}`)
+    .all();
+  const col = (key) => rows.map(r => r[key]).filter(v => v != null);
+  const dl = col('download'), up = col('upload'), pg = col('ping');
+  return {
+    count: dl.length,
+    download: { avg: avg(dl), median: median(dl) },
+    upload: { avg: avg(up), median: median(up) },
+    ping: { avg: avg(pg), median: median(pg) },
+  };
+}
+
+function getAnalytics() {
+  return {
+    day: windowStats('24h'),
+    week: windowStats('7d'),
+    month: windowStats('30d'),
+  };
+}
+
 function getDbSize() {
   const result = getDb().prepare("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()").get();
   return result ? result.size : 0;
@@ -113,4 +150,4 @@ function buildTimeFilter(range) {
   return filters[range] || filters['24h'];
 }
 
-module.exports = { insertLog, getLogs, getLatest, getStats, getDbSize, getSetting, setSetting, closeDb };
+module.exports = { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb };

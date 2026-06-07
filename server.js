@@ -2,15 +2,16 @@ const express = require('express');
 const cron = require('node-cron');
 const path = require('path');
 const { runSpeedTest } = require('./speedtest');
-const { insertLog, getLogs, getLatest, getStats, getDbSize, getSetting, setSetting, closeDb } = require('./db');
+const { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb } = require('./db');
 const { DEFAULT_SERVER_KEY, FASTEST_KEY, getServerByKey, isValidSelection, listOptions, pickFastestServer } = require('./servers');
+const { DEFAULT_SCHEDULE_KEY, getCronForKey, isValidScheduleKey, listScheduleOptions } = require('./schedules');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 * * * *';
 
 let testRunning = false;
 let nextScheduledTest = null;
+let scheduledTask = null;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -49,6 +50,10 @@ app.get('/api/stats', (req, res) => {
   res.json(stats);
 });
 
+app.get('/api/analytics', (req, res) => {
+  res.json(getAnalytics());
+});
+
 app.get('/api/status', (req, res) => {
   res.json({
     running: testRunning,
@@ -72,6 +77,21 @@ app.post('/api/server', (req, res) => {
   setSetting('selected_server', selection);
   console.log(`[${new Date().toISOString()}] Server selection changed to "${selection}"`);
   res.json({ success: true, selected: selection });
+});
+
+app.get('/api/schedule', (req, res) => {
+  res.json({ selected: getScheduleKey(), options: listScheduleOptions() });
+});
+
+app.post('/api/schedule', (req, res) => {
+  const { schedule } = req.body || {};
+  if (!isValidScheduleKey(schedule)) {
+    return res.status(400).json({ success: false, error: 'Invalid schedule selection' });
+  }
+  setSetting('schedule', schedule);
+  applySchedule(schedule);
+  console.log(`[${new Date().toISOString()}] Schedule changed to "${schedule}"`);
+  res.json({ success: true, selected: schedule });
 });
 
 // --- Test runner ---
@@ -120,14 +140,31 @@ function computeNextHour() {
   return next;
 }
 
-cron.schedule(CRON_SCHEDULE, () => {
+function runScheduledTest() {
   nextScheduledTest = computeNextHour();
   if (!testRunning) {
     executeTest('scheduled').catch(() => {});
   } else {
     console.log(`[${new Date().toISOString()}] Skipping scheduled test — another test is already running`);
   }
-});
+}
+
+// Resolve the saved schedule (default hourly), falling back if it's invalid/missing.
+function getScheduleKey() {
+  const stored = getSetting('schedule');
+  return isValidScheduleKey(stored) ? stored : DEFAULT_SCHEDULE_KEY;
+}
+
+// (Re)apply a schedule to the live cron task — stops the old one so changes take
+// effect without restarting the process.
+function applySchedule(key) {
+  const expr = getCronForKey(key) || getCronForKey(DEFAULT_SCHEDULE_KEY);
+  if (scheduledTask) scheduledTask.stop();
+  scheduledTask = cron.schedule(expr, runScheduledTest);
+  console.log(`[${new Date().toISOString()}] Scheduled tests: "${key}" (${expr})`);
+}
+
+applySchedule(getScheduleKey());
 
 nextScheduledTest = computeNextHour();
 
