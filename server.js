@@ -15,6 +15,9 @@ let nextScheduledTest = null;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Lightweight health check for deploy verification (no auth, always 200).
+app.get('/health', (req, res) => res.json({ ok: true }));
+
 // --- API Routes ---
 
 app.get('/api/logs', (req, res) => {
@@ -140,8 +143,8 @@ nextScheduledTest = computeNextHour();
 
 // --- Start server ---
 
-const server = app.listen(PORT, () => {
-  console.log(`Speed Test Logger running at http://localhost:${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Speed Test Logger running at http://0.0.0.0:${PORT} (reachable on the LAN)`);
 });
 
 // --- Graceful shutdown ---
