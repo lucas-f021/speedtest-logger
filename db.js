@@ -29,6 +29,22 @@ function getDb() {
         key TEXT PRIMARY KEY,
         value TEXT
       );
+
+      -- Persisted weekly/monthly rollups of speed_logs (see snapshots.js).
+      -- One row per completed (or in-progress) ISO week / calendar month.
+      CREATE TABLE IF NOT EXISTS snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period_type TEXT NOT NULL,            -- 'week' | 'month'
+        period_key  TEXT NOT NULL,            -- '2026-W23' | '2026-06'
+        period_start TEXT NOT NULL,           -- 'YYYY-MM-DD HH:MM:SS' UTC, inclusive
+        period_end   TEXT NOT NULL,           -- exclusive
+        count INTEGER NOT NULL,
+        download_avg REAL, download_median REAL, download_stdev REAL,
+        upload_avg REAL,   upload_median REAL,   upload_stdev REAL,
+        ping_avg REAL,     ping_median REAL,     ping_stdev REAL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(period_type, period_key)
+      );
     `);
   }
   return db;
@@ -122,6 +138,67 @@ function getAnalytics() {
   };
 }
 
+// Like windowStats() but for an explicit [startISO, endISO) window (UTC
+// 'YYYY-MM-DD HH:MM:SS' strings). Used to roll up weekly/monthly snapshots.
+function statsBetween(startISO, endISO) {
+  const rows = getDb()
+    .prepare('SELECT download, upload, ping FROM speed_logs WHERE timestamp >= ? AND timestamp < ?')
+    .all(startISO, endISO);
+  const col = (key) => rows.map(r => r[key]).filter(v => v != null);
+  const dl = col('download'), up = col('upload'), pg = col('ping');
+  return {
+    count: dl.length,
+    download: { avg: avg(dl), median: median(dl), stdev: stdev(dl) },
+    upload: { avg: avg(up), median: median(up), stdev: stdev(up) },
+    ping: { avg: avg(pg), median: median(pg), stdev: stdev(pg) },
+  };
+}
+
+// --- Snapshot persistence (weekly/monthly rollups) ---
+
+function getMinTimestamp() {
+  const row = getDb().prepare('SELECT MIN(timestamp) AS min FROM speed_logs').get();
+  return row && row.min ? row.min : null;
+}
+
+function upsertSnapshot(s) {
+  getDb().prepare(`
+    INSERT INTO snapshots
+      (period_type, period_key, period_start, period_end, count,
+       download_avg, download_median, download_stdev,
+       upload_avg, upload_median, upload_stdev,
+       ping_avg, ping_median, ping_stdev)
+    VALUES
+      (@period_type, @period_key, @period_start, @period_end, @count,
+       @download_avg, @download_median, @download_stdev,
+       @upload_avg, @upload_median, @upload_stdev,
+       @ping_avg, @ping_median, @ping_stdev)
+    ON CONFLICT(period_type, period_key) DO UPDATE SET
+      period_start = excluded.period_start,
+      period_end   = excluded.period_end,
+      count        = excluded.count,
+      download_avg = excluded.download_avg, download_median = excluded.download_median, download_stdev = excluded.download_stdev,
+      upload_avg   = excluded.upload_avg,   upload_median   = excluded.upload_median,   upload_stdev   = excluded.upload_stdev,
+      ping_avg     = excluded.ping_avg,     ping_median     = excluded.ping_median,     ping_stdev     = excluded.ping_stdev,
+      created_at   = datetime('now')
+  `).run(s);
+}
+
+function getSnapshot(periodType, periodKey) {
+  return getDb()
+    .prepare('SELECT * FROM snapshots WHERE period_type = ? AND period_key = ?')
+    .get(periodType, periodKey) || null;
+}
+
+function getSnapshots(periodType, { startKey, endKey } = {}) {
+  let sql = 'SELECT * FROM snapshots WHERE period_type = ?';
+  const params = [periodType];
+  if (startKey) { sql += ' AND period_key >= ?'; params.push(startKey); }
+  if (endKey)   { sql += ' AND period_key <= ?'; params.push(endKey); }
+  sql += ' ORDER BY period_key';
+  return getDb().prepare(sql).all(...params);
+}
+
 function getDbSize() {
   const result = getDb().prepare("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()").get();
   return result ? result.size : 0;
@@ -158,4 +235,7 @@ function buildTimeFilter(range) {
   return filters[range] || filters['24h'];
 }
 
-module.exports = { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb };
+module.exports = {
+  insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb,
+  statsBetween, getMinTimestamp, upsertSnapshot, getSnapshot, getSnapshots,
+};

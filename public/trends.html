@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trends · Speed Test Logger</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="trends-body">
+  <div class="trends-page">
+    <header class="trends-header">
+      <div class="trends-header-left">
+        <a href="/" class="back-link">&larr; Dashboard</a>
+        <h1>Trends</h1>
+      </div>
+      <nav class="trends-breadcrumb" id="breadcrumb"></nav>
+    </header>
+
+    <main class="trends-main">
+      <section class="trends-chart-section">
+        <div class="trends-chart-wrapper">
+          <canvas id="trends-chart"></canvas>
+        </div>
+        <p class="trends-hint" id="trends-hint"></p>
+      </section>
+
+      <section class="trends-table-section">
+        <div class="table-wrapper">
+          <table id="trends-table">
+            <thead id="trends-thead"></thead>
+            <tbody id="trends-tbody">
+              <tr><td class="empty-state">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <script src="trends.js"></script>
+</body>
+</html>

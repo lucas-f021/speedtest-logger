@@ -5,6 +5,7 @@ const { runSpeedTest } = require('./speedtest');
 const { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb } = require('./db');
 const { DEFAULT_SERVER_KEY, FASTEST_KEY, getServerByKey, isValidSelection, listOptions, pickFastestServer } = require('./servers');
 const { DEFAULT_SCHEDULE_KEY, getCronForKey, isValidScheduleKey, listScheduleOptions } = require('./schedules');
+const { backfillSnapshots, getTrends } = require('./snapshots');
 const pkg = require('./package.json');
 
 const app = express();
@@ -53,6 +54,14 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/api/analytics', (req, res) => {
   res.json(getAnalytics());
+});
+
+// Persisted weekly/monthly trends. `?period=month` (default) → trailing 12 months;
+// `?period=week&within=YYYY-MM` → that month's weeks. The in-progress period is computed
+// live and flagged `partial`.
+app.get('/api/trends', (req, res) => {
+  const { period = 'month', within } = req.query;
+  res.json(getTrends({ period, within }));
 });
 
 app.get('/api/status', (req, res) => {
@@ -172,6 +181,18 @@ function applySchedule(key) {
 applySchedule(getScheduleKey());
 
 nextScheduledTest = computeNextHour();
+
+// Snapshots: build any missing weekly/monthly rollups now, then keep them current with a
+// fixed daily rollup. backfillSnapshots() is idempotent, so a period is captured within a
+// day of completing and a missed run (downtime) self-heals on the next tick.
+try { backfillSnapshots(); } catch (err) {
+  console.error(`[${new Date().toISOString()}] Snapshot backfill failed:`, err.message);
+}
+cron.schedule('5 0 * * *', () => {
+  try { backfillSnapshots(); } catch (err) {
+    console.error(`[${new Date().toISOString()}] Snapshot rollup failed:`, err.message);
+  }
+});
 
 // Run immediately on startup if last test was more than 1 hour ago
 (async () => {

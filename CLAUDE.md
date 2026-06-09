@@ -20,10 +20,11 @@ A self-hosted internet speed test logging application that runs on a Windows 11 
 ```
 speedtest-logger/
 ├── server.js              # Express server, all API routes, re-schedulable cron scheduler, graceful shutdown
-├── db.js                  # SQLite setup; logs/stats/analytics query helpers; key-value settings store
+├── db.js                  # SQLite setup; logs/stats/analytics + snapshot query helpers; key-value settings store
 ├── speedtest.js           # Speed test runner (wraps speedtest-net; accepts a server id)
 ├── servers.js             # Vetted server registry + "Fastest" latency picker
 ├── schedules.js           # Cron preset registry (30m / 1h / 2h / 6h / 12h / daily)
+├── snapshots.js           # Weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends read path
 ├── patches/               # patch-package patches (e.g. speedtest-net arm64 support)
 ├── scripts/               # update.ps1 (rollback-safe deploy) + deploy.bat (one-click wrapper)
 ├── package.json           # deps + the decompress-tarxz override; "version" is the app version
@@ -32,9 +33,11 @@ speedtest-logger/
 ├── BACKLOG.md             # nice-to-have ideas
 ├── SPEEDTEST-DEPLOY.md    # canonical NSSM / one-click deploy runbook
 └── public/                # Static frontend served by Express
-    ├── index.html         # Layout: left sidebar (server / analytics / schedule / version) + main dashboard
-    ├── style.css          # Styling (fixed-viewport dashboard, scrollable table)
-    └── app.js             # Frontend logic (selectors, chart + table + analytics, version)
+    ├── index.html         # Layout: left sidebar (server / analytics / schedule / Trends link / version) + main dashboard
+    ├── style.css          # Styling (fixed-viewport dashboard + Trends page, scrollable tables)
+    ├── app.js             # Dashboard logic (selectors, chart + table + analytics, version)
+    ├── trends.html        # Trends page: monthly overview, drill into a month's weeks
+    └── trends.js          # Trends logic (line chart + ±sd band, drill-down, numbers table)
 ```
 
 ## Database Schema
@@ -63,6 +66,23 @@ CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
+);
+
+-- Persisted weekly/monthly rollups of speed_logs (one row per ISO week / calendar month).
+-- Derived from speed_logs and recomputable; backfilled on startup + a daily cron (idempotent
+-- upsert keyed by period_type+period_key). See snapshots.js.
+CREATE TABLE IF NOT EXISTS snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_type TEXT NOT NULL,            -- 'week' | 'month'
+    period_key  TEXT NOT NULL,            -- '2026-W23' | '2026-06'
+    period_start TEXT NOT NULL,           -- ISO 8601 UTC, inclusive
+    period_end   TEXT NOT NULL,           -- exclusive
+    count INTEGER NOT NULL,
+    download_avg REAL, download_median REAL, download_stdev REAL,
+    upload_avg REAL,   upload_median REAL,   upload_stdev REAL,
+    ping_avg REAL,     ping_median REAL,     ping_stdev REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(period_type, period_key)
 );
 ```
 
@@ -95,6 +115,13 @@ Returns aggregate stats for a given range:
 ### `GET /api/analytics`
 Rolling-window analytics for the sidebar (no params). For each of `day` (24h), `week` (7d), `month` (30d):
 `{ count, download: {avg, median, stdev}, upload: {…}, ping: {…} }`. Median + stdev are computed in JS (SQLite has neither).
+
+### `GET /api/trends`
+Persisted weekly/monthly snapshot trends for the Trends page (`snapshots.js`).
+- `?period=month` (default) — the trailing 12 calendar months (incl. the current one).
+- `?period=week&within=YYYY-MM` — the ISO weeks (Mon-start, UTC) whose Monday falls in that month (drill-down).
+
+Response: `{ period, within?, rows: [{ key, label, start, end, count, partial, download:{avg,median,stdev}, upload:{…}, ping:{…} }] }`, oldest→newest. Completed periods come from the `snapshots` table (falling back to a live recompute if not yet persisted); the in-progress period is always computed live from `speed_logs` and flagged `partial: true`.
 
 ### `GET /api/status`
 Returns `{ running, nextScheduledTest: "ISO timestamp", dbSize }` — used to drive the running indicator.
@@ -132,7 +159,10 @@ Selecting an option saves it (via `POST /api/server`) for future tests only — 
 Below the server selector: rolling **avg / median / stdev** of download, upload, and ping for three windows — **Day (24h) / Week (7d) / Month (30d)** — fed by `GET /api/analytics`.
 
 ### Sidebar — Schedule & version
-A dropdown sets how often the scheduled test runs (30m / 1h / 2h / 6h / 12h / daily), backed by `GET|POST /api/schedule`; the choice persists and is applied live. The app version (`vX.Y.Z`, from `package.json`) is pinned at the bottom of the sidebar.
+A dropdown sets how often the scheduled test runs (30m / 1h / 2h / 6h / 12h / daily), backed by `GET|POST /api/schedule`; the choice persists and is applied live. The app version (`vX.Y.Z`, from `package.json`) is pinned at the bottom of the sidebar. A **Reports → Trends** link opens the standalone Trends page (`/trends.html`).
+
+### Trends Page (`trends.html` / `trends.js`)
+A standalone page (linked from the sidebar) for looking back over the year, fed by `GET /api/trends`. Defaults to a **monthly** dual-axis line chart (download/upload avg on the left Mbps axis with a shaded ±stdev band on download; ping avg on the right ms axis) plus a numbers table of avg/median/stdev per period. **Clicking a month** (point or table row) **drills into that month's ISO weeks**; a breadcrumb returns to the monthly view. The in-progress (`partial`) period is drawn lighter/dashed and tagged `live`. Reuses the dashboard's theme, chart styling, and table layout.
 
 ### Components
 
@@ -171,6 +201,11 @@ A dropdown sets how often the scheduled test runs (30m / 1h / 2h / 6h / 12h / da
 - On server startup, check when the last test was. If more than 1 hour ago, run one immediately.
 - Log test start/completion to console with timestamps.
 - If a test is already running (manual or scheduled), skip/queue rather than running concurrent tests. Use a simple mutex/flag.
+
+### Snapshot Rollups (`snapshots.js`)
+- On startup and via a fixed daily cron (`'5 0 * * *'`, separate from the re-applyable test cron), `backfillSnapshots()` recomputes the avg/median/stdev of every completed ISO week and calendar month from `speed_logs` and **upserts** them into the `snapshots` table.
+- Idempotent: re-running overwrites the same `(period_type, period_key)` rows, so missed runs (downtime) self-heal on the next tick and a period is persisted within a day of completing.
+- Period math is all UTC; week boundaries are ISO weeks (Monday start). The in-progress period is never persisted — `GET /api/trends` computes it live so the Trends page is always current.
 
 ### Server Selection (`servers.js`)
 - A fixed registry of three vetted local servers (Comcast/Boston `1774`, GONETSPEED/Providence `74553`, i3/Warren `29122`) plus a `"fastest"` option, each with host/port for latency probing.

@@ -44,18 +44,21 @@ There is **no runtime auth, no TLS, no message queue, no ORM** — by design, it
 ## Project structure
 ```
 speedtest-logger/
-├── server.js        # Express app, all API routes, the re-schedulable node-cron job, graceful shutdown
-├── db.js            # better-sqlite3 setup + schema; query/stat/analytics helpers; key-value settings store
+├── server.js        # Express app, all API routes, the re-schedulable node-cron job, daily snapshot cron, graceful shutdown
+├── db.js            # better-sqlite3 setup + schema; query/stat/analytics + snapshot helpers; key-value settings store
 ├── speedtest.js     # wraps speedtest-net; normalizes the result; converts bytes/sec → Mbps
 ├── servers.js       # registry of 3 vetted Ookla servers + a "Fastest" TCP-latency picker
 ├── schedules.js     # registry of cron presets (30m / 1h / 2h / 6h / 12h / daily)
+├── snapshots.js     # weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends read path
 ├── public/
-│   ├── index.html   # layout: left sidebar (server / analytics / schedule / version) + main (stats, chart, table)
-│   ├── style.css    # dark theme, fixed-viewport dashboard
-│   └── app.js       # all frontend logic: fetch + render chart/table/analytics, selectors, toasts
+│   ├── index.html   # dashboard layout: left sidebar (server / analytics / schedule / Trends link / version) + main (stats, chart, table)
+│   ├── style.css    # dark theme, fixed-viewport dashboard + Trends page
+│   ├── app.js       # dashboard frontend logic: fetch + render chart/table/analytics, selectors, toasts
+│   ├── trends.html  # standalone Trends page: monthly overview, drill into a month's weeks
+│   └── trends.js    # Trends logic: line chart + ±sd band, click-to-drill, numbers table
 ├── patches/         # patch-package patch (speedtest-net arm64)
 ├── scripts/         # update.ps1 (rollback-safe deploy) + deploy.bat (one-click wrapper)
-├── package.json     # deps + the decompress-tarxz override; version is the app version (v0.1.0)
+├── package.json     # deps + the decompress-tarxz override; version is the app version (v0.2.0)
 └── speedtest.db     # SQLite file, created on first run (gitignored)
 ```
 
@@ -76,6 +79,7 @@ speedtest-logger/
 - `POST /api/test` (on-demand; `409` if one is already running)
 - `GET /api/stats?range` (avg/min/max for a range)
 - `GET /api/analytics` (avg / median / **stdev** of download/upload/ping over rolling 24h / 7d / 30d)
+- `GET /api/trends?period=month` · `?period=week&within=YYYY-MM` (persisted weekly/monthly snapshots; in-progress period computed live + flagged `partial`)
 - `GET /api/status` (running flag, next scheduled test, db size) · `GET /api/version`
 - `GET|POST /api/server` (server selector) · `GET|POST /api/schedule` (cron cadence)
 
@@ -83,6 +87,18 @@ speedtest-logger/
 - **`speed_logs`** — `id, timestamp (UTC), download, upload, ping, jitter, server_name, server_location,
   isp, result_url, source ('scheduled' | 'manual')`; index on `timestamp`.
 - **`settings`** — `key, value` key-value store (`selected_server`, `schedule`).
+- **`snapshots`** — persisted weekly/monthly rollups: `period_type ('week'|'month'), period_key
+  ('2026-W23'|'2026-06'), period_start/period_end (UTC), count, {download,upload,ping}_{avg,median,stdev}`;
+  unique on `(period_type, period_key)`. Derived from `speed_logs` and recomputable.
+
+## Snapshots & trends
+The **Trends page** (`trends.html`/`trends.js`, linked from the sidebar) looks back over the year:
+a monthly overview that drills into a clicked month's ISO weeks, each period showing avg/median/stdev
+of download/upload/ping. Snapshots are aggregates of `speed_logs`, so they're recomputable: on startup
+and via a fixed **daily cron** (`5 0 * * *`, separate from the re-applyable test cron), `snapshots.js`
+`backfillSnapshots()` recomputes every completed week/month and **upserts** them (idempotent — missed
+runs self-heal). The in-progress period is never persisted as final; `GET /api/trends` computes it live
+and flags it `partial`. All period math is UTC (weeks are ISO, Monday-start).
 
 ## Deployment
 Runs on a Windows 11 home server as an **NSSM service** (`speedtest-logger`, port 3000, auto-start +
