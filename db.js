@@ -24,6 +24,9 @@ function getDb() {
         source TEXT NOT NULL DEFAULT 'scheduled'
       );
       CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
+      -- NOTE: extra Ookla columns (packet_loss, bytes_*, elapsed_*, external_ip, is_vpn,
+      -- server_id/host/port/ip/country) are added by ensureColumns() below — CREATE TABLE
+      -- IF NOT EXISTS won't alter the live production table, so they're migrated in additively.
 
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -46,14 +49,60 @@ function getDb() {
         UNIQUE(period_type, period_key)
       );
     `);
+    ensureColumns();
   }
   return db;
 }
 
+// Additive, idempotent migration: add any missing columns to a live table.
+// SQLite ADD COLUMN is cheap and safe; existing rows get NULL.
+function ensureTableColumns(table, columns) {
+  const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+  for (const [name, type] of Object.entries(columns)) {
+    if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+  }
+}
+
+function ensureColumns() {
+  ensureTableColumns('speed_logs', {
+    packet_loss: 'REAL',
+    bytes_downloaded: 'INTEGER',
+    bytes_uploaded: 'INTEGER',
+    elapsed_download: 'INTEGER',
+    elapsed_upload: 'INTEGER',
+    external_ip: 'TEXT',
+    is_vpn: 'INTEGER',
+    server_id: 'TEXT',
+    server_host: 'TEXT',
+    server_port: 'INTEGER',
+    server_ip: 'TEXT',
+    server_country: 'TEXT',
+  });
+  // Distribution columns for the Trends boxplots. Snapshots are fully recomputable from
+  // speed_logs, so backfillSnapshots() (startup + daily cron) fills these for old rows.
+  const quartileCols = {};
+  for (const metric of ['download', 'upload', 'ping']) {
+    for (const stat of ['min', 'p25', 'p75', 'max']) {
+      quartileCols[`${metric}_${stat}`] = 'REAL';
+    }
+  }
+  quartileCols.packet_loss_avg = 'REAL';
+  quartileCols.bytes_total = 'INTEGER';
+  ensureTableColumns('snapshots', quartileCols);
+}
+
 function insertLog(data) {
   const stmt = getDb().prepare(`
-    INSERT INTO speed_logs (timestamp, download, upload, ping, jitter, server_name, server_location, isp, result_url, source)
-    VALUES (@timestamp, @download, @upload, @ping, @jitter, @server_name, @server_location, @isp, @result_url, @source)
+    INSERT INTO speed_logs (
+      timestamp, download, upload, ping, jitter, server_name, server_location, isp, result_url, source,
+      packet_loss, bytes_downloaded, bytes_uploaded, elapsed_download, elapsed_upload,
+      external_ip, is_vpn, server_id, server_host, server_port, server_ip, server_country
+    )
+    VALUES (
+      @timestamp, @download, @upload, @ping, @jitter, @server_name, @server_location, @isp, @result_url, @source,
+      @packet_loss, @bytes_downloaded, @bytes_uploaded, @elapsed_download, @elapsed_upload,
+      @external_ip, @is_vpn, @server_id, @server_host, @server_port, @server_ip, @server_country
+    )
   `);
   const result = stmt.run(data);
   return result.lastInsertRowid;
@@ -86,6 +135,8 @@ function getStats(range = '24h') {
       ROUND(MAX(download), 2) as maxDownload,
       ROUND(MIN(upload), 2) as minUpload,
       ROUND(MAX(upload), 2) as maxUpload,
+      ROUND(AVG(packet_loss), 2) as avgPacketLoss,
+      SUM(COALESCE(bytes_downloaded, 0) + COALESCE(bytes_uploaded, 0)) as bytesTotal,
       COUNT(*) as totalTests
     FROM speed_logs
     ${whereClause}
@@ -138,20 +189,75 @@ function getAnalytics() {
   };
 }
 
+// Linear-interpolated percentile of an already-sorted array (p in [0, 1]).
+function percentile(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  const v = lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+  return Math.round(v * 10) / 10;
+}
+
+// avg/median/stdev plus the five-number spread (min/p25/p75/max) for the Trends boxplots.
+function distSummary(nums) {
+  if (!nums.length) {
+    return { avg: null, median: null, stdev: null, min: null, p25: null, p75: null, max: null };
+  }
+  const sorted = [...nums].sort((a, b) => a - b);
+  return {
+    avg: avg(nums), median: median(nums), stdev: stdev(nums),
+    min: sorted[0], max: sorted[sorted.length - 1],
+    p25: percentile(sorted, 0.25), p75: percentile(sorted, 0.75),
+  };
+}
+
 // Like windowStats() but for an explicit [startISO, endISO) window (UTC
 // 'YYYY-MM-DD HH:MM:SS' strings). Used to roll up weekly/monthly snapshots.
 function statsBetween(startISO, endISO) {
   const rows = getDb()
-    .prepare('SELECT download, upload, ping FROM speed_logs WHERE timestamp >= ? AND timestamp < ?')
+    .prepare(`
+      SELECT download, upload, ping, packet_loss,
+             COALESCE(bytes_downloaded, 0) + COALESCE(bytes_uploaded, 0) AS bytes
+      FROM speed_logs WHERE timestamp >= ? AND timestamp < ?
+    `)
     .all(startISO, endISO);
   const col = (key) => rows.map(r => r[key]).filter(v => v != null);
-  const dl = col('download'), up = col('upload'), pg = col('ping');
+  const dl = col('download'), up = col('upload'), pg = col('ping'), pl = col('packet_loss');
+  const bytesTotal = rows.reduce((a, r) => a + r.bytes, 0);
   return {
     count: dl.length,
-    download: { avg: avg(dl), median: median(dl), stdev: stdev(dl) },
-    upload: { avg: avg(up), median: median(up), stdev: stdev(up) },
-    ping: { avg: avg(pg), median: median(pg), stdev: stdev(pg) },
+    download: distSummary(dl),
+    upload: distSummary(up),
+    ping: distSummary(pg),
+    packet_loss_avg: pl.length ? Math.round((pl.reduce((a, b) => a + b, 0) / pl.length) * 100) / 100 : null,
+    bytes_total: bytesTotal || null,
   };
+}
+
+// Raw per-test rows for one period — feeds the Trends dot strips (one dot per test).
+function getTestsBetween(startISO, endISO) {
+  return getDb().prepare(`
+    SELECT timestamp, download, upload, ping FROM speed_logs
+    WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp
+  `).all(startISO, endISO);
+}
+
+// Per-day download aggregates for the Trends calendar heatmap. Median is computed in
+// JS (SQLite has no median); row volume is small (≤ ~48 tests/day).
+function getDailyStats(days = 365) {
+  const rows = getDb().prepare(`
+    SELECT date(timestamp) AS day, download FROM speed_logs
+    WHERE timestamp >= datetime('now', ?) AND download IS NOT NULL
+    ORDER BY day
+  `).all(`-${Math.max(1, days)} days`);
+  const byDay = new Map();
+  for (const r of rows) {
+    if (!byDay.has(r.day)) byDay.set(r.day, []);
+    byDay.get(r.day).push(r.download);
+  }
+  return [...byDay.entries()].map(([date, dls]) => ({
+    date, count: dls.length, median: median(dls), avg: avg(dls),
+  }));
 }
 
 // --- Snapshot persistence (weekly/monthly rollups) ---
@@ -162,25 +268,24 @@ function getMinTimestamp() {
 }
 
 function upsertSnapshot(s) {
+  // avg/median/stdev plus min/p25/p75/max per metric — generate the column lists so the
+  // INSERT, VALUES, and DO UPDATE clauses can't drift apart.
+  const statCols = [];
+  for (const metric of ['download', 'upload', 'ping']) {
+    for (const stat of ['avg', 'median', 'stdev', 'min', 'p25', 'p75', 'max']) {
+      statCols.push(`${metric}_${stat}`);
+    }
+  }
+  statCols.push('packet_loss_avg', 'bytes_total');
+  const cols = ['period_type', 'period_key', 'period_start', 'period_end', 'count', ...statCols];
+  const updates = ['period_start', 'period_end', 'count', ...statCols]
+    .map(c => `${c} = excluded.${c}`).join(', ');
   getDb().prepare(`
-    INSERT INTO snapshots
-      (period_type, period_key, period_start, period_end, count,
-       download_avg, download_median, download_stdev,
-       upload_avg, upload_median, upload_stdev,
-       ping_avg, ping_median, ping_stdev)
-    VALUES
-      (@period_type, @period_key, @period_start, @period_end, @count,
-       @download_avg, @download_median, @download_stdev,
-       @upload_avg, @upload_median, @upload_stdev,
-       @ping_avg, @ping_median, @ping_stdev)
+    INSERT INTO snapshots (${cols.join(', ')})
+    VALUES (${cols.map(c => '@' + c).join(', ')})
     ON CONFLICT(period_type, period_key) DO UPDATE SET
-      period_start = excluded.period_start,
-      period_end   = excluded.period_end,
-      count        = excluded.count,
-      download_avg = excluded.download_avg, download_median = excluded.download_median, download_stdev = excluded.download_stdev,
-      upload_avg   = excluded.upload_avg,   upload_median   = excluded.upload_median,   upload_stdev   = excluded.upload_stdev,
-      ping_avg     = excluded.ping_avg,     ping_median     = excluded.ping_median,     ping_stdev     = excluded.ping_stdev,
-      created_at   = datetime('now')
+      ${updates},
+      created_at = datetime('now')
   `).run(s);
 }
 
@@ -237,5 +342,6 @@ function buildTimeFilter(range) {
 
 module.exports = {
   insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb,
-  statsBetween, getMinTimestamp, upsertSnapshot, getSnapshot, getSnapshots,
+  statsBetween, getMinTimestamp, upsertSnapshot, getSnapshot, getSnapshots, getDailyStats,
+  getTestsBetween,
 };

@@ -1,6 +1,6 @@
 {
   "name": "speedtest-logger",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "description": "Self-hosted internet speed test logger with web UI",
   "main": "server.js",
   "scripts": {

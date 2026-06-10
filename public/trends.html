@@ -13,34 +13,26 @@
         <a href="/" class="back-link">&larr; Dashboard</a>
         <h1>Trends</h1>
       </div>
-      <nav class="trends-breadcrumb" id="breadcrumb"></nav>
+      <span class="trends-header-sub" id="report-title"></span>
     </header>
 
-    <main class="trends-main">
-      <section class="trends-chart-section">
-        <div class="trends-chart-wrapper">
-          <canvas id="trends-chart"></canvas>
-        </div>
-        <p class="trends-hint" id="trends-hint"></p>
-      </section>
+    <main class="report-main">
+      <!-- Left: the selected month's stats, with the month picker below -->
+      <div class="report-left">
+        <div id="month-panel"></div>
+        <section class="trends-panel picker-panel">
+          <h2 class="panel-title">Months</h2>
+          <div id="month-list" class="month-list"></div>
+        </section>
+      </div>
 
-      <section class="trends-table-section">
-        <div class="table-wrapper">
-          <table id="trends-table">
-            <thead id="trends-thead"></thead>
-            <tbody id="trends-tbody">
-              <tr><td class="empty-state">Loading…</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <!-- Right: the selected month's ISO weeks, one stat box each -->
+      <div id="week-grid" class="week-grid"></div>
     </main>
   </div>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
   <script src="trends.js"></script>
 </body>
 </html>

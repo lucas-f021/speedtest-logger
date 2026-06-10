@@ -173,8 +173,20 @@ async function loadStats() {
     document.getElementById('stat-download').textContent = s.avgDownload ?? '—';
     document.getElementById('stat-upload').textContent = s.avgUpload ?? '—';
     document.getElementById('stat-ping').textContent = s.avgPing ?? '—';
+    document.getElementById('stat-loss').textContent = s.avgPacketLoss ?? '—';
+    renderDataUsed(s.bytesTotal);
     document.getElementById('stat-total').textContent = s.totalTests ?? '—';
   } catch (_) {}
+}
+
+// Total bytes used across the current range, shown in the friendliest unit (GB ≥ 1, else MB).
+function renderDataUsed(bytesTotal) {
+  const valEl = document.getElementById('stat-data');
+  const unitEl = document.getElementById('stat-data-unit');
+  if (!bytesTotal) { valEl.textContent = '—'; unitEl.textContent = 'GB'; return; }
+  const gb = bytesTotal / 1e9;
+  if (gb >= 1) { valEl.textContent = gb.toFixed(2); unitEl.textContent = 'GB'; }
+  else { valEl.textContent = (bytesTotal / 1e6).toFixed(0); unitEl.textContent = 'MB'; }
 }
 
 // --- Sidebar analytics (rolling avg + median for 24h / 7d / 30d) ---
@@ -435,7 +447,7 @@ function renderChart(logs) {
 function renderTable(logs) {
   const tbody = document.getElementById('log-tbody');
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No data for this time range</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No data for this time range</td></tr>';
     return;
   }
 
@@ -445,10 +457,34 @@ function renderTable(logs) {
       <td>${l.download != null ? l.download + ' Mbps' : '—'}</td>
       <td>${l.upload != null ? l.upload + ' Mbps' : '—'}</td>
       <td>${l.ping != null ? l.ping + ' ms' : '—'}</td>
-      <td>${escHtml(l.server_location || l.server_name || '—')}</td>
+      <td>${l.packet_loss != null ? Number(l.packet_loss).toFixed(2) + '%' : '—'}</td>
+      <td>${fmtTestData(l)}</td>
+      <td title="${escHtml(serverTooltip(l))}">${escHtml(l.server_location || l.server_name || '—')}</td>
       <td><span class="badge badge-${l.source}">${l.source}</span></td>
     </tr>
   `).join('');
+}
+
+// Data used by this single test (download + upload bytes), in the friendliest unit.
+function fmtTestData(l) {
+  const bytes = (l.bytes_downloaded || 0) + (l.bytes_uploaded || 0);
+  if (!bytes) return '—';
+  const mb = bytes / 1e6;
+  return mb >= 1000 ? (mb / 1000).toFixed(2) + ' GB' : mb.toFixed(0) + ' MB';
+}
+
+// Fold the stored-but-not-columned fields (external IP, VPN, full server identity)
+// into the Server cell's hover tooltip so every captured field is visible somewhere.
+function serverTooltip(l) {
+  const parts = [];
+  if (l.server_name) parts.push(l.server_name);
+  if (l.server_host) parts.push(`host ${l.server_host}`);
+  if (l.server_country) parts.push(l.server_country);
+  if (l.server_ip) parts.push(`server IP ${l.server_ip}`);
+  if (l.server_id) parts.push(`id ${l.server_id}`);
+  if (l.external_ip) parts.push(`your IP ${l.external_ip}`);
+  if (l.is_vpn) parts.push('over VPN');
+  return parts.join(' · ') || 'No server detail';
 }
 
 // --- Status polling ---

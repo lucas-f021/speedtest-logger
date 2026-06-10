@@ -1,248 +1,179 @@
-// Trends page: persisted weekly/monthly rollups from GET /api/trends.
-// Monthly overview by default; click a month to drill into that month's weeks.
+// Trends page: month-centric report fed by GET /api/month (picker list comes from
+// GET /api/trends?period=month). Left column: the selected month's stat panel + a month
+// picker. Right: one stat box per ISO week of that month (upcoming weeks are placeholders).
+// Every box shows the same stat block plus a dot strip — one dot per test (hover for the
+// exact value/time), a median tick, and one shared x-scale across the whole page.
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const COLORS = {
-  download: '#38bdf8', // --accent-blue
-  upload: '#34d399',   // --accent-green
-  ping: '#fb923c',     // --accent-orange
-  band: 'rgba(56,189,248,0.12)',
-  grid: '#1e2130',
-  muted: '#7c8498',
-};
+let months = [];      // picker rows (oldest→newest, from /api/trends)
+let selected = null;  // 'YYYY-MM'
+let scaleMax = 100;   // shared dot-strip x-scale (Mbps), derived from the month's tests
 
-const METRICS = [
-  { key: 'download', label: 'Download (Mbps)', unit: 'Mbps', axis: 'ySpeed' },
-  { key: 'upload', label: 'Upload (Mbps)', unit: 'Mbps', axis: 'ySpeed' },
-  { key: 'ping', label: 'Ping (ms)', unit: 'ms', axis: 'yPing' },
-];
+document.addEventListener('DOMContentLoaded', init);
 
-let view = { period: 'month', within: null };
-let currentRows = [];
-let trendsChart = null;
-
-document.addEventListener('DOMContentLoaded', loadTrends);
-
-async function loadTrends() {
-  const qs = view.period === 'week'
-    ? `?period=week&within=${encodeURIComponent(view.within)}`
-    : '?period=month';
+async function init() {
   try {
-    const res = await fetch('/api/trends' + qs);
+    const res = await fetch('/api/trends?period=month');
     const data = await res.json();
-    currentRows = data.rows || [];
-    renderBreadcrumb(data);
-    renderHint();
-    renderChart(currentRows);
-    renderTable(currentRows);
+    months = data.rows || [];
+    if (!months.length) {
+      document.getElementById('month-panel').innerHTML =
+        '<div class="statbox"><div class="sb-upcoming">No data yet — run a few tests first.</div></div>';
+      return;
+    }
+    selected = months[months.length - 1].key; // default: the current (newest) month
+    renderPicker();
+    await loadMonth();
   } catch (_) {
-    showToast('Could not load trends', 'error');
+    showToast('Could not load months', 'error');
   }
 }
 
-// --- Breadcrumb + hint ---
+async function loadMonth() {
+  try {
+    const res = await fetch(`/api/month?within=${encodeURIComponent(selected)}`);
+    const report = await res.json();
+    const values = (report.month.points || []).map(p => p.download).filter(v => v != null);
+    scaleMax = niceCeil(values.length ? Math.max(...values) : 100);
+    renderMonthPanel(report.month);
+    renderWeeks(report.weeks);
+    document.getElementById('report-title').textContent = monthLabelFromKey(selected);
+  } catch (_) {
+    showToast('Could not load month report', 'error');
+  }
+}
+
+// --- Month picker ---
 
 function monthLabelFromKey(key) {
   const [y, m] = key.split('-').map(Number);
   return `${MONTH_NAMES[m - 1]} ${y}`;
 }
 
-function renderBreadcrumb(data) {
-  const el = document.getElementById('breadcrumb');
-  if (data.period === 'week') {
-    el.innerHTML = `<a id="crumb-back">Months</a><span class="crumb-sep">▸</span><span class="crumb-current">${escHtml(monthLabelFromKey(data.within))}</span>`;
-    document.getElementById('crumb-back').addEventListener('click', () => {
-      view = { period: 'month', within: null };
-      loadTrends();
+function renderPicker() {
+  const el = document.getElementById('month-list');
+  el.innerHTML = months.map(r => `
+    <button class="month-item ${r.key === selected ? 'active' : ''}" data-key="${escHtml(r.key)}">
+      <span>${escHtml(r.label)}</span>
+      ${r.partial ? '<span class="partial-tag">live</span>' : ''}
+      <span class="mi-n">n ${r.count}</span>
+    </button>`).join('');
+  el.querySelectorAll('.month-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.key === selected) return;
+      selected = btn.dataset.key;
+      renderPicker();
+      loadMonth();
     });
-  } else {
-    el.innerHTML = `<span class="crumb-current">Months</span>`;
-  }
-}
-
-function renderHint() {
-  const el = document.getElementById('trends-hint');
-  el.textContent = view.period === 'month'
-    ? 'Click a month to drill into its weeks.'
-    : 'Weekly breakdown · use “Months” above to go back.';
-}
-
-// --- Chart ---
-
-const round2 = (n) => Math.round(n * 100) / 100;
-
-function lineDataset(metric) {
-  const color = COLORS[metric.key];
-  const partial = currentRows.map(r => r.partial);
-  return {
-    label: metric.label,
-    metricKey: metric.key,
-    data: currentRows.map(r => r[metric.key].avg),
-    borderColor: color,
-    backgroundColor: color,
-    yAxisID: metric.axis,
-    tension: 0.3,
-    borderDash: metric.key === 'ping' ? [4, 3] : undefined,
-    pointRadius: currentRows.map(r => (r[metric.key].avg == null ? 0 : (r.partial ? 5 : 3))),
-    pointBackgroundColor: currentRows.map(r => (r.partial ? 'transparent' : color)),
-    fill: false,
-    // Dash the final segment leading into the in-progress period.
-    segment: metric.key === 'ping' ? undefined : {
-      borderDash: (ctx) => (partial[ctx.p1DataIndex] ? [6, 4] : undefined),
-    },
-  };
-}
-
-function bandDatasets() {
-  const lower = currentRows.map(r => {
-    const m = r.download;
-    return (m.avg != null && m.stdev != null) ? round2(m.avg - m.stdev) : null;
-  });
-  const upper = currentRows.map(r => {
-    const m = r.download;
-    return (m.avg != null && m.stdev != null) ? round2(m.avg + m.stdev) : null;
-  });
-  const base = { yAxisID: 'ySpeed', pointRadius: 0, borderColor: 'transparent', tension: 0.3, band: true };
-  return [
-    { ...base, label: 'dl-lower', data: lower, fill: false },
-    { ...base, label: '↓ ±sd', data: upper, backgroundColor: COLORS.band, fill: '-1' },
-  ];
-}
-
-function renderChart(rows) {
-  const ctx = document.getElementById('trends-chart').getContext('2d');
-  if (trendsChart) { trendsChart.destroy(); trendsChart = null; }
-  if (!rows.length) return;
-
-  trendsChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: rows.map(r => r.label),
-      datasets: [...bandDatasets(), ...METRICS.map(lineDataset)],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      onHover: (e, els) => {
-        e.native.target.style.cursor = (view.period === 'month' && els.length) ? 'pointer' : 'default';
-      },
-      onClick: (e, els) => {
-        if (view.period !== 'month' || !els.length) return;
-        const row = currentRows[els[0].index];
-        if (row) { view = { period: 'week', within: row.key }; loadTrends(); }
-      },
-      plugins: {
-        legend: {
-          labels: {
-            color: COLORS.muted,
-            boxWidth: 12,
-            font: { size: 12 },
-            filter: (item, data) => !data.datasets[item.datasetIndex].band,
-          },
-        },
-        tooltip: {
-          backgroundColor: '#1a1d26',
-          borderColor: '#2a2d3e',
-          borderWidth: 1,
-          titleColor: '#e2e8f0',
-          bodyColor: '#e2e8f0',
-          padding: 12,
-          boxWidth: 16,
-          boxHeight: 16,
-          boxPadding: 6,
-          bodySpacing: 6,
-          titleFont: { size: 13, weight: '600' },
-          bodyFont: { size: 14 },
-          filter: (item) => !item.dataset.band,
-          callbacks: {
-            title: (items) => {
-              const row = currentRows[items[0].dataIndex];
-              return `${row.label}${row.partial ? ' · in progress' : ''} · n ${row.count}`;
-            },
-            labelColor: (c) => ({
-              borderColor: c.dataset.borderColor,
-              backgroundColor: c.dataset.borderColor,
-              borderWidth: 2,
-              borderRadius: 2,
-            }),
-            label: (c) => {
-              const row = currentRows[c.dataIndex];
-              const m = row[c.dataset.metricKey];
-              const unit = c.dataset.metricKey === 'ping' ? 'ms' : 'Mbps';
-              if (m.avg == null) return `${c.dataset.label}: —`;
-              return `${c.dataset.label}: ${m.avg} ${unit}  (med ${fmt(m.median)}, sd ${fmt(m.stdev)})`;
-            },
-          },
-        },
-      },
-      scales: {
-        x: {
-          grid: { color: COLORS.grid },
-          ticks: { color: COLORS.muted, maxRotation: 0, autoSkip: true },
-        },
-        ySpeed: {
-          position: 'left',
-          grid: { color: COLORS.grid },
-          ticks: { color: COLORS.muted },
-          title: { display: true, text: 'Mbps', color: COLORS.muted, font: { size: 11 } },
-        },
-        yPing: {
-          position: 'right',
-          grid: { drawOnChartArea: false },
-          ticks: { color: COLORS.muted },
-          title: { display: true, text: 'Ping (ms)', color: COLORS.muted, font: { size: 11 } },
-        },
-      },
-    },
   });
 }
 
-// --- Table ---
+// --- Stat boxes ---
 
-const THEAD = `
-  <tr>
-    <th>Period</th><th>n</th>
-    <th>↓ avg</th><th>↓ med</th><th>↓ sd</th>
-    <th>↑ avg</th><th>↑ med</th><th>↑ sd</th>
-    <th>ping avg</th><th>ping med</th><th>ping sd</th>
-  </tr>`;
+const fmt1 = (n) => n == null ? '—' : (Math.round(n * 10) / 10).toFixed(1);
 
-function renderTable(rows) {
-  document.getElementById('trends-thead').innerHTML = THEAD;
-  const tbody = document.getElementById('trends-tbody');
+function niceCeil(v) {
+  if (v <= 100) return 100;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  return Math.ceil(v / mag) * mag;
+}
 
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No snapshots yet</td></tr>';
-    return;
-  }
+function fmtBytes(bytes) {
+  if (!bytes) return '—';
+  const gb = bytes / 1e9;
+  return gb >= 1 ? gb.toFixed(2) + ' GB' : (bytes / 1e6).toFixed(0) + ' MB';
+}
 
-  const drillable = view.period === 'month';
-  tbody.innerHTML = rows.map(r => `
-    <tr class="${r.partial ? 'trend-partial' : ''} ${drillable ? 'drillable' : ''}" data-key="${escHtml(r.key)}">
-      <td>${escHtml(r.label)}${r.partial ? ' <span class="partial-tag">live</span>' : ''}</td>
-      <td>${r.count}</td>
-      <td>${fmt(r.download.avg)}</td><td>${fmt(r.download.median)}</td><td>${fmt(r.download.stdev)}</td>
-      <td>${fmt(r.upload.avg)}</td><td>${fmt(r.upload.median)}</td><td>${fmt(r.upload.stdev)}</td>
-      <td>${fmt(r.ping.avg)}</td><td>${fmt(r.ping.median)}</td><td>${fmt(r.ping.stdev)}</td>
-    </tr>`).join('');
+// 'Jun 1–7' (or 'Jun 29 – Jul 5' across a month boundary); end is exclusive in the API.
+function rangeLabel(row) {
+  const s = new Date(row.start + 'Z');
+  const e = new Date(new Date(row.end + 'Z') - 86400000);
+  const sM = MONTH_NAMES[s.getUTCMonth()], eM = MONTH_NAMES[e.getUTCMonth()];
+  return sM === eM
+    ? `${sM} ${s.getUTCDate()}–${e.getUTCDate()}`
+    : `${sM} ${s.getUTCDate()} – ${eM} ${e.getUTCDate()}`;
+}
 
-  if (drillable) {
-    tbody.querySelectorAll('tr.drillable').forEach(tr => {
-      tr.addEventListener('click', () => {
-        view = { period: 'week', within: tr.dataset.key };
-        loadTrends();
-      });
-    });
-  }
+// One dot per test along a 0→scaleMax Mbps axis, with deterministic vertical jitter and
+// a median tick. Native <title> tooltips carry the exact value + local time.
+function dotStrip(points, median) {
+  const W = 240, H = 40, left = 8, right = 8, axisY = 34;
+  const x = (v) => left + (Math.min(v, scaleMax) / scaleMax) * (W - left - right);
+  const dots = (points || []).filter(p => p.download != null).map((p, i) => {
+    const jitter = ((i * 2654435761) % 13) - 6;
+    const when = new Date(p.timestamp + 'Z').toLocaleString();
+    return `<circle cx="${x(p.download).toFixed(1)}" cy="${20 + jitter}" r="3"><title>${p.download} Mbps · ${escHtml(when)}</title></circle>`;
+  }).join('');
+  const med = median != null
+    ? `<line class="strip-median" x1="${x(median).toFixed(1)}" y1="7" x2="${x(median).toFixed(1)}" y2="32"><title>median ${fmt1(median)} Mbps</title></line>`
+    : '';
+  return `
+    <svg class="dot-strip" viewBox="0 0 ${W} ${H}" role="img" aria-label="Dot strip of test results">
+      <line class="strip-axis" x1="${left}" y1="${axisY}" x2="${W - right}" y2="${axisY}"/>
+      <text x="${left}" y="${H - 1}">0</text>
+      <text x="${W - right}" y="${H - 1}" text-anchor="end">${scaleMax.toLocaleString()}</text>
+      ${dots}${med}
+    </svg>`;
+}
+
+function statRows(row) {
+  const d = row.download, u = row.upload, p = row.ping;
+  return `
+    <div class="sb-grid">
+      <span class="sb-k">median</span><span class="sb-v">${fmt1(d.median)}</span>
+      <span class="sb-k">sd</span><span class="sb-v">${fmt1(d.stdev)}</span>
+      <span class="sb-k">min · max</span><span class="sb-v">${fmt1(d.min)} · ${fmt1(d.max)}</span>
+      <span class="sb-k">↑ upload</span><span class="sb-v">${fmt1(u.avg)} <span class="sb-sub">med ${fmt1(u.median)}</span></span>
+      <span class="sb-k">ping</span><span class="sb-v">${fmt1(p.avg)} ms <span class="sb-sub">med ${fmt1(p.median)}</span></span>
+      <span class="sb-k">loss</span><span class="sb-v">${row.packet_loss_avg != null ? row.packet_loss_avg + '%' : '—'}</span>
+      <span class="sb-k">data</span><span class="sb-v">${fmtBytes(row.bytes_total)}</span>
+    </div>`;
+}
+
+function renderMonthPanel(month) {
+  const title = `${escHtml(month.label)}${month.partial ? ' · to date' : ''}`;
+  document.getElementById('month-panel').innerHTML = `
+    <div class="statbox statbox-month ${month.partial ? 'statbox-live' : ''}">
+      <div class="sb-head">
+        <span class="sb-title">${title}</span>
+        ${month.partial ? '<span class="partial-tag">live</span>' : ''}
+        <span class="sb-n">n ${month.count}</span>
+      </div>
+      ${month.count ? `
+        <div class="sb-big">${fmt1(month.download.avg)}<span class="sb-unit"> Mbps ↓ mean</span></div>
+        ${dotStrip(month.points, month.download.median)}
+        ${statRows(month)}
+      ` : '<div class="sb-upcoming">no tests this month</div>'}
+    </div>`;
+}
+
+function renderWeeks(weeks) {
+  document.getElementById('week-grid').innerHTML = weeks.map(w => {
+    const head = `
+      <div class="sb-head">
+        <span class="sb-title">Wk ${w.index}</span>
+        <span class="sb-range">${rangeLabel(w)}</span>
+        ${w.partial ? '<span class="partial-tag">live</span>' : ''}
+        <span class="sb-n">${w.future ? '' : `n ${w.count}`}</span>
+      </div>`;
+    if (w.future) {
+      return `<div class="statbox statbox-future">${head}<div class="sb-upcoming">upcoming</div></div>`;
+    }
+    if (!w.count) {
+      return `<div class="statbox statbox-future">${head}<div class="sb-upcoming">no tests</div></div>`;
+    }
+    return `
+      <div class="statbox ${w.partial ? 'statbox-live' : ''}">
+        ${head}
+        <div class="sb-big">${fmt1(w.download.avg)}<span class="sb-unit"> Mbps ↓ mean</span></div>
+        ${dotStrip(w.points, w.download.median)}
+        ${statRows(w)}
+      </div>`;
+  }).join('');
 }
 
 // --- Helpers ---
-
-function fmt(n) {
-  return n == null ? '—' : (Math.round(n * 10) / 10).toFixed(1);
-}
 
 function escHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

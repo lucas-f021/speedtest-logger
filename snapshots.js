@@ -9,7 +9,7 @@
 //
 // All period math is done in UTC to match how timestamps are stored (db.js / server.js).
 
-const { statsBetween, getMinTimestamp, upsertSnapshot, getSnapshot } = require('./db');
+const { statsBetween, getMinTimestamp, upsertSnapshot, getSnapshot, getTestsBetween } = require('./db');
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -84,26 +84,34 @@ function addWeek(date) {
 
 // --- Shaping ---
 
+const METRICS = ['download', 'upload', 'ping'];
+const STATS = ['avg', 'median', 'stdev', 'min', 'p25', 'p75', 'max'];
+
 function snapToStats(s) {
-  return {
-    count: s.count,
-    download: { avg: s.download_avg, median: s.download_median, stdev: s.download_stdev },
-    upload: { avg: s.upload_avg, median: s.upload_median, stdev: s.upload_stdev },
-    ping: { avg: s.ping_avg, median: s.ping_median, stdev: s.ping_stdev },
-  };
+  const out = { count: s.count };
+  for (const metric of METRICS) {
+    out[metric] = {};
+    for (const stat of STATS) out[metric][stat] = s[`${metric}_${stat}`] ?? null;
+  }
+  out.packet_loss_avg = s.packet_loss_avg ?? null;
+  out.bytes_total = s.bytes_total ?? null;
+  return out;
 }
 
 function snapshotRow(p, stats) {
-  return {
+  const row = {
     period_type: p.type,
     period_key: p.key,
     period_start: toSqlUtc(p.start),
     period_end: toSqlUtc(p.end),
     count: stats.count,
-    download_avg: stats.download.avg, download_median: stats.download.median, download_stdev: stats.download.stdev,
-    upload_avg: stats.upload.avg, upload_median: stats.upload.median, upload_stdev: stats.upload.stdev,
-    ping_avg: stats.ping.avg, ping_median: stats.ping.median, ping_stdev: stats.ping.stdev,
   };
+  for (const metric of METRICS) {
+    for (const stat of STATS) row[`${metric}_${stat}`] = stats[metric][stat] ?? null;
+  }
+  row.packet_loss_avg = stats.packet_loss_avg ?? null;
+  row.bytes_total = stats.bytes_total ?? null;
+  return row;
 }
 
 // --- Backfill ---
@@ -173,6 +181,8 @@ function buildRow(p, now) {
     download: stats.download,
     upload: stats.upload,
     ping: stats.ping,
+    packet_loss_avg: stats.packet_loss_avg ?? null,
+    bytes_total: stats.bytes_total ?? null,
   };
 }
 
@@ -220,4 +230,46 @@ function getTrends({ period = 'month', within = null } = {}) {
   return period === 'week' ? weekTrends(within) : monthTrends();
 }
 
-module.exports = { backfillSnapshots, getTrends };
+// --- Month report (read path for GET /api/month) ---
+
+// One month's stats + every ISO week whose Monday falls inside it, in layout order.
+// Past/current weeks carry full stats plus raw per-test points (for the dot strips);
+// weeks that haven't started yet come back as numbered placeholders. The month row
+// gets points too so the page can share one x-scale across all strips.
+function getMonthReport(within) {
+  if (!within || !/^\d{4}-\d{2}$/.test(within)) return null;
+  const [y, m] = within.split('-').map(Number);
+  const monthStart = new Date(Date.UTC(y, m - 1, 1));
+  const monthEnd = new Date(Date.UTC(y, m, 1));
+  const now = new Date();
+
+  const mp = monthPeriod(monthStart);
+  const month = buildRow(mp, now);
+  month.points = getTestsBetween(toSqlUtc(mp.start), toSqlUtc(mp.end));
+
+  let cursor = weekStart(monthStart);
+  while (cursor < monthStart) cursor = addWeek(cursor); // first Monday on/after the 1st
+
+  const weeks = [];
+  let index = 1;
+  while (cursor < monthEnd) {
+    const p = weekPeriod(cursor);
+    if (p.start > now) {
+      weeks.push({
+        key: p.key, label: p.label, index, future: true, count: 0,
+        start: toSqlUtc(p.start), end: toSqlUtc(p.end),
+      });
+    } else {
+      const row = buildRow(p, now);
+      row.index = index;
+      row.future = false;
+      row.points = getTestsBetween(toSqlUtc(p.start), toSqlUtc(p.end));
+      weeks.push(row);
+    }
+    cursor = addWeek(cursor);
+    index++;
+  }
+  return { within, month, weeks };
+}
+
+module.exports = { backfillSnapshots, getTrends, getMonthReport };

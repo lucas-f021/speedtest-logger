@@ -24,7 +24,7 @@ speedtest-logger/
 ├── speedtest.js           # Speed test runner (wraps speedtest-net; accepts a server id)
 ├── servers.js             # Vetted server registry + "Fastest" latency picker
 ├── schedules.js           # Cron preset registry (30m / 1h / 2h / 6h / 12h / daily)
-├── snapshots.js           # Weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends read path
+├── snapshots.js           # Weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends + month-report read paths
 ├── patches/               # patch-package patches (e.g. speedtest-net arm64 support)
 ├── scripts/               # update.ps1 (rollback-safe deploy) + deploy.bat (one-click wrapper)
 ├── package.json           # deps + the decompress-tarxz override; "version" is the app version
@@ -36,8 +36,8 @@ speedtest-logger/
     ├── index.html         # Layout: left sidebar (server / analytics / schedule / Trends link / version) + main dashboard
     ├── style.css          # Styling (fixed-viewport dashboard + Trends page, scrollable tables)
     ├── app.js             # Dashboard logic (selectors, chart + table + analytics, version)
-    ├── trends.html        # Trends page: monthly overview, drill into a month's weeks
-    └── trends.js          # Trends logic (line chart + ±sd band, drill-down, numbers table)
+    ├── trends.html        # Trends month report: month stat panel + picker + week stat boxes
+    └── trends.js          # Trends logic (no chart lib): stat boxes + inline-SVG dot strips
 ```
 
 ## Database Schema
@@ -55,7 +55,21 @@ CREATE TABLE IF NOT EXISTS speed_logs (
     server_location TEXT,   -- City/region of test server
     isp TEXT,               -- ISP name reported by Ookla
     result_url TEXT,        -- Ookla result URL (nullable)
-    source TEXT NOT NULL DEFAULT 'scheduled'  -- 'scheduled' or 'manual'
+    source TEXT NOT NULL DEFAULT 'scheduled',  -- 'scheduled' or 'manual'
+    -- Extra Ookla fields (added additively via db.js ensureColumns() — ALTER TABLE on the
+    -- live DB, since CREATE TABLE IF NOT EXISTS won't alter an existing table). All nullable.
+    packet_loss REAL,        -- % packets lost
+    bytes_downloaded INTEGER,-- bytes moved during the download test
+    bytes_uploaded INTEGER,  -- bytes moved during the upload test
+    elapsed_download INTEGER,-- download test duration (ms)
+    elapsed_upload INTEGER,  -- upload test duration (ms)
+    external_ip TEXT,        -- WAN / public IP at test time
+    is_vpn INTEGER,          -- 1 if the test ran over a VPN, else 0
+    server_id TEXT,          -- Ookla server id
+    server_host TEXT,        -- server host:port
+    server_port INTEGER,     -- server port
+    server_ip TEXT,          -- server IP
+    server_country TEXT      -- server country
 );
 
 CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
@@ -81,6 +95,10 @@ CREATE TABLE IF NOT EXISTS snapshots (
     download_avg REAL, download_median REAL, download_stdev REAL,
     upload_avg REAL,   upload_median REAL,   upload_stdev REAL,
     ping_avg REAL,     ping_median REAL,     ping_stdev REAL,
+    -- Added via ensureColumns(); snapshots are recomputable so backfillSnapshots() fills
+    -- these for pre-existing rows on its next run:
+    -- {download,upload,ping}_{min,p25,p75,max} — 12 REAL columns (five-number spread),
+    -- packet_loss_avg REAL, bytes_total INTEGER (per-period quality + data used).
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(period_type, period_key)
 );
@@ -110,18 +128,26 @@ Response: `{ success: true, result: { ... } }` or `{ success: false, error: "...
 ### `GET /api/stats`
 Returns aggregate stats for a given range:
 - `?range=24h|7d|30d|all`
-- Response: `{ avgDownload, avgUpload, avgPing, minDownload, maxDownload, minUpload, maxUpload, totalTests }`
+- Response: `{ avgDownload, avgUpload, avgPing, minDownload, maxDownload, minUpload, maxUpload, avgPacketLoss, bytesTotal, totalTests }` (`avgPacketLoss` in %, `bytesTotal` = summed download+upload bytes over the range)
 
 ### `GET /api/analytics`
 Rolling-window analytics for the sidebar (no params). For each of `day` (24h), `week` (7d), `month` (30d):
 `{ count, download: {avg, median, stdev}, upload: {…}, ping: {…} }`. Median + stdev are computed in JS (SQLite has neither).
 
 ### `GET /api/trends`
-Persisted weekly/monthly snapshot trends for the Trends page (`snapshots.js`).
+Persisted weekly/monthly snapshot trends (`snapshots.js`). The Trends page uses the month mode for its picker list; the week mode remains available.
 - `?period=month` (default) — the trailing 12 calendar months (incl. the current one).
-- `?period=week&within=YYYY-MM` — the ISO weeks (Mon-start, UTC) whose Monday falls in that month (drill-down).
+- `?period=week&within=YYYY-MM` — the ISO weeks (Mon-start, UTC) whose Monday falls in that month.
 
-Response: `{ period, within?, rows: [{ key, label, start, end, count, partial, download:{avg,median,stdev}, upload:{…}, ping:{…} }] }`, oldest→newest. Completed periods come from the `snapshots` table (falling back to a live recompute if not yet persisted); the in-progress period is always computed live from `speed_logs` and flagged `partial: true`.
+Response: `{ period, within?, rows: [{ key, label, start, end, count, partial, download:{avg,median,stdev,min,p25,p75,max}, upload:{…}, ping:{…} }] }`, oldest→newest. Completed periods come from the `snapshots` table (falling back to a live recompute if not yet persisted); the in-progress period is always computed live from `speed_logs` and flagged `partial: true`.
+
+### `GET /api/month`
+The Trends page's month report. `?within=YYYY-MM` (default: the current month).
+Response: `{ within, month, weeks: [...] }`. `month` and each non-future week are trend rows (same shape as `/api/trends` rows, plus `packet_loss_avg`, `bytes_total`, and `points: [{ timestamp, download, upload, ping }]` — the raw tests, for the dot strips). `weeks` covers every ISO week whose Monday falls in the month (4–5), in order with an `index`; weeks that haven't started yet are placeholders: `{ key, label, index, future: true, count: 0, start, end }`. `400` on a malformed month key.
+
+### `GET /api/daily`
+Per-day download aggregates. `?days=N` (default 365, max 730). **Currently unused by the UI** (the calendar heatmap was retired in the v0.5.0 month-report redesign) — kept for future use.
+Response: `{ days, rows: [{ date: 'YYYY-MM-DD', count, median, avg }] }` (download Mbps), oldest→newest, days with no tests omitted.
 
 ### `GET /api/status`
 Returns `{ running, nextScheduledTest: "ISO timestamp", dbSize }` — used to drive the running indicator.
@@ -162,7 +188,11 @@ Below the server selector: rolling **avg / median / stdev** of download, upload,
 A dropdown sets how often the scheduled test runs (30m / 1h / 2h / 6h / 12h / daily), backed by `GET|POST /api/schedule`; the choice persists and is applied live. The app version (`vX.Y.Z`, from `package.json`) is pinned at the bottom of the sidebar. A **Reports → Trends** link opens the standalone Trends page (`/trends.html`).
 
 ### Trends Page (`trends.html` / `trends.js`)
-A standalone page (linked from the sidebar) for looking back over the year, fed by `GET /api/trends`. Defaults to a **monthly** dual-axis line chart (download/upload avg on the left Mbps axis with a shaded ±stdev band on download; ping avg on the right ms axis) plus a numbers table of avg/median/stdev per period. **Clicking a month** (point or table row) **drills into that month's ISO weeks**; a breadcrumb returns to the monthly view. The in-progress (`partial`) period is drawn lighter/dashed and tagged `live`. Reuses the dashboard's theme, chart styling, and table layout.
+A standalone **month-centric report** (linked from the sidebar), no chart library — the visuals are small hand-rolled inline SVGs. Fed by `GET /api/month` (the report) + `GET /api/trends?period=month` (the picker list). Layout:
+- **Left column** — the selected month's **stat panel** (defaults to the current month, tagged `live` and "to date"), with a **month picker** below it (every month with data, trailing 12; clicking re-renders the page for that month).
+- **Right** — one **stat box per ISO week** of the selected month (Mon-start; 4 or 5 boxes). Weeks that haven't started yet render as dashed "upcoming" placeholders.
+- **Every stat box** (month + weeks) shows the same block: big mean download, a **dot strip** (one dot per test on a 0→max Mbps axis shared across the whole page, with deterministic jitter, a yellow median tick, and native hover tooltips showing the exact value + local time), then median / sd / min·max, compact upload + ping lines (avg with median), packet-loss avg, and data used.
+Period summaries are deliberately **not** drawn as a line chart — they're distributions, not a time series. Reuses the dashboard's dark theme.
 
 ### Components
 
@@ -175,7 +205,7 @@ A standalone page (linked from the sidebar) for looking back over the year, fed 
   - Automatically refreshes the chart and table with the new data point
 
 #### Stats Bar
-- Cards showing: Average Download, Average Upload, Average Ping, Total Tests
+- Cards showing: Average Download, Average Upload, Average Ping, Average Packet Loss, Data Used (total GB/MB over the range), Total Tests
 - Updates based on the currently selected time range
 
 #### Speed Chart (Chart.js)
@@ -188,7 +218,7 @@ A standalone page (linked from the sidebar) for looking back over the year, fed 
 - Smooth curves, filled area under download/upload lines (low opacity)
 
 #### Log Table
-- Columns: Timestamp (local time), Download (Mbps), Upload (Mbps), Ping (ms), Server, Source (scheduled/manual badge)
+- Columns: Timestamp (local time), Download (Mbps), Upload (Mbps), Ping (ms), Loss (packet loss %), Data (per-test data used), Server, Source (scheduled/manual badge). The Server cell's hover tooltip surfaces the stored-but-not-columned fields (external IP, VPN flag, server host/country/ip/id).
 - Sorted newest first
 - Alternating row colors for readability
 - Auto-updates when time range changes
@@ -301,6 +331,6 @@ pm2 startup   # follow instructions to set up Windows service
 }
 ```
 
-Frontend dependencies loaded via CDN in `index.html`:
-- Chart.js: `https://cdn.jsdelivr.net/npm/chart.js`
-- chartjs-adapter-date-fns: `https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns`
+Frontend dependencies loaded via CDN:
+- `index.html` (dashboard): Chart.js + chartjs-adapter-date-fns (`https://cdn.jsdelivr.net/npm/chart.js`, `…/chartjs-adapter-date-fns`)
+- `trends.html` (Trends page): none — the dot strips are dependency-free inline SVG

@@ -64,6 +64,16 @@
         <div class="stat-unit">ms</div>
       </div>
       <div class="stat-card">
+        <div class="stat-label">Avg Packet Loss</div>
+        <div class="stat-value" id="stat-loss">—</div>
+        <div class="stat-unit">%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Data Used</div>
+        <div class="stat-value" id="stat-data">—</div>
+        <div class="stat-unit" id="stat-data-unit">GB</div>
+      </div>
+      <div class="stat-card">
         <div class="stat-label">Total Tests</div>
         <div class="stat-value" id="stat-total">—</div>
         <div class="stat-unit">runs</div>
@@ -94,12 +104,14 @@
               <th>Download</th>
               <th>Upload</th>
               <th>Ping</th>
+              <th>Loss</th>
+              <th>Data</th>
               <th>Server</th>
               <th>Source</th>
             </tr>
           </thead>
           <tbody id="log-tbody">
-            <tr><td colspan="6" class="empty-state">No data yet</td></tr>
+            <tr><td colspan="8" class="empty-state">No data yet</td></tr>
           </tbody>
         </table>
       </div>

@@ -5,18 +5,20 @@ to build them.
 
 ## Nice to have
 
-### Capture more of what the speed-test engine already reports
-`speedtest-net` (the Ookla Speedtest CLI wrapper) returns ~20 fields per test, but we only store 8
-(download, upload, ping, jitter, server name/location, ISP, result URL). Fields available for free in
-every result that we currently discard — see the `speedtest-net` README "Return value" section:
+### Resurrect retired Trends visuals once there's more history
+The v0.4.0 Trends experiments (delta badges vs the prior period, distribution boxplots, the
+GitHub-style **daily download calendar heatmap**) were replaced by the v0.5.0 month report.
+With 6+ months of data some could return as companions to it — the heatmap is the strongest
+candidate, and its backend (`GET /api/daily`) is still in place, just unused by the UI.
 
-- **Packet loss** (`packetLoss`, %) — a real connection-quality metric we don't track today.
-- **Data used per test** (`download.bytes` + `upload.bytes`) — sum and surface it; pairs naturally with
-  the Schedule picker (e.g. show "≈ X GB/day at this cadence", since each test can use ~0.25–1 GB).
-- **Test duration** (`download.elapsed` / `upload.elapsed`, ms).
-- **External / WAN IP** (`interface.externalIp`) — spot when the ISP changes your public IP.
-- **VPN flag** (`interface.isVpn`) — flag any test that ran over a VPN.
-- **Fuller server identity** (`server.country` / `host` / `port` / `ip` / Ookla `id`).
+## Done
 
-Effort is small per field: add a column to `speed_logs` (`db.js`), map it in `speedtest.js`, and show it
-in the table / stats / analytics as desired. Packet loss and data-used are the highest-value picks.
+### Capture more of what the speed-test engine already reports — ✅ v0.3.0
+Now capturing all six previously-discarded field groups into `speed_logs` (`packet_loss`,
+`bytes_downloaded`/`bytes_uploaded`, `elapsed_download`/`elapsed_upload`, `external_ip`, `is_vpn`,
+and fuller server identity: `server_id`/`host`/`port`/`ip`/`country`). Packet loss and data-used
+are surfaced as stat cards + log-table columns; the rest live in the Server cell's hover tooltip.
+
+Possible follow-ups (not yet queued):
+- Roll packet-loss / data-used into the weekly/monthly **snapshots** + Trends page.
+- A "≈ X GB/day at this cadence" projection tied to the Schedule picker.

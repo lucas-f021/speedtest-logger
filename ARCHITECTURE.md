@@ -31,7 +31,8 @@ services — everything runs in one process on a LAN.
 | Piece | Choice | Loaded via |
 |---|---|---|
 | UI | Plain **HTML + CSS + vanilla JS** | served from `public/` |
-| Charting | **Chart.js** + **chartjs-adapter-date-fns** | CDN (`jsdelivr`) in `index.html` |
+| Charting (dashboard) | **Chart.js** + **chartjs-adapter-date-fns** | CDN (`jsdelivr`) in `index.html` |
+| Charting (Trends) | none — dependency-free **inline SVG** dot strips | rendered by `trends.js` |
 
 ### Dev / build-time
 | Piece | Choice | Why |
@@ -49,16 +50,16 @@ speedtest-logger/
 ├── speedtest.js     # wraps speedtest-net; normalizes the result; converts bytes/sec → Mbps
 ├── servers.js       # registry of 3 vetted Ookla servers + a "Fastest" TCP-latency picker
 ├── schedules.js     # registry of cron presets (30m / 1h / 2h / 6h / 12h / daily)
-├── snapshots.js     # weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends read path
+├── snapshots.js     # weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends + month-report read paths
 ├── public/
 │   ├── index.html   # dashboard layout: left sidebar (server / analytics / schedule / Trends link / version) + main (stats, chart, table)
 │   ├── style.css    # dark theme, fixed-viewport dashboard + Trends page
 │   ├── app.js       # dashboard frontend logic: fetch + render chart/table/analytics, selectors, toasts
-│   ├── trends.html  # standalone Trends page: monthly overview, drill into a month's weeks
-│   └── trends.js    # Trends logic: line chart + ±sd band, click-to-drill, numbers table
+│   ├── trends.html  # standalone Trends month report: month stat panel + picker + week stat boxes
+│   └── trends.js    # Trends logic (no chart lib): stat boxes + inline-SVG dot strips
 ├── patches/         # patch-package patch (speedtest-net arm64)
 ├── scripts/         # update.ps1 (rollback-safe deploy) + deploy.bat (one-click wrapper)
-├── package.json     # deps + the decompress-tarxz override; version is the app version (v0.2.0)
+├── package.json     # deps + the decompress-tarxz override; version is the app version (v0.5.0)
 └── speedtest.db     # SQLite file, created on first run (gitignored)
 ```
 
@@ -77,24 +78,32 @@ speedtest-logger/
 - `GET /health` → `{ ok: true }` (deploy smoke-test)
 - `GET /api/logs?range&limit&offset` · `GET /api/logs/latest`
 - `POST /api/test` (on-demand; `409` if one is already running)
-- `GET /api/stats?range` (avg/min/max for a range)
+- `GET /api/stats?range` (avg/min/max, avg packet loss, total data used, for a range)
 - `GET /api/analytics` (avg / median / **stdev** of download/upload/ping over rolling 24h / 7d / 30d)
-- `GET /api/trends?period=month` · `?period=week&within=YYYY-MM` (persisted weekly/monthly snapshots; in-progress period computed live + flagged `partial`)
+- `GET /api/trends?period=month` · `?period=week&within=YYYY-MM` (persisted weekly/monthly snapshots incl. min/p25/p75/max; in-progress period computed live + flagged `partial`; month mode feeds the Trends picker)
+- `GET /api/month?within=YYYY-MM` (the Trends month report: month stats + its ISO weeks incl. upcoming placeholders + raw per-test points for the dot strips)
+- `GET /api/daily?days=365` (per-day download median/avg/count; currently unused by the UI)
 - `GET /api/status` (running flag, next scheduled test, db size) · `GET /api/version`
 - `GET|POST /api/server` (server selector) · `GET|POST /api/schedule` (cron cadence)
 
 ## Data model (`speedtest.db`)
 - **`speed_logs`** — `id, timestamp (UTC), download, upload, ping, jitter, server_name, server_location,
-  isp, result_url, source ('scheduled' | 'manual')`; index on `timestamp`.
+  isp, result_url, source ('scheduled' | 'manual')`; index on `timestamp`. Plus richer per-test capture
+  (added additively via `db.js` `ensureColumns()`): `packet_loss, bytes_downloaded, bytes_uploaded,
+  elapsed_download, elapsed_upload, external_ip, is_vpn, server_id/host/port/ip/country`.
 - **`settings`** — `key, value` key-value store (`selected_server`, `schedule`).
 - **`snapshots`** — persisted weekly/monthly rollups: `period_type ('week'|'month'), period_key
-  ('2026-W23'|'2026-06'), period_start/period_end (UTC), count, {download,upload,ping}_{avg,median,stdev}`;
-  unique on `(period_type, period_key)`. Derived from `speed_logs` and recomputable.
+  ('2026-W23'|'2026-06'), period_start/period_end (UTC), count,
+  {download,upload,ping}_{avg,median,stdev,min,p25,p75,max}, packet_loss_avg, bytes_total`;
+  unique on `(period_type, period_key)`. Derived from `speed_logs` and recomputable — the daily/startup
+  backfill upserts every completed period, so newly added columns self-heal.
 
 ## Snapshots & trends
-The **Trends page** (`trends.html`/`trends.js`, linked from the sidebar) looks back over the year:
-a monthly overview that drills into a clicked month's ISO weeks, each period showing avg/median/stdev
-of download/upload/ping. Snapshots are aggregates of `speed_logs`, so they're recomputable: on startup
+The **Trends page** (`trends.html`/`trends.js`, linked from the sidebar) is a **month report**:
+a month picker selects the month, the left panel shows that month's full stats, and the right grid
+shows one stat box per ISO week (upcoming weeks as placeholders). Every box pairs the numbers
+(mean/median/sd/min/max, upload + ping, packet loss, data used) with an inline-SVG **dot strip** —
+one dot per raw test on a page-wide 0→max axis, median tick, hover tooltips. Snapshots are aggregates of `speed_logs`, so they're recomputable: on startup
 and via a fixed **daily cron** (`5 0 * * *`, separate from the re-applyable test cron), `snapshots.js`
 `backfillSnapshots()` recomputes every completed week/month and **upserts** them (idempotent — missed
 runs self-heal). The in-progress period is never persisted as final; `GET /api/trends` computes it live

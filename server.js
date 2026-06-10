@@ -2,10 +2,10 @@ const express = require('express');
 const cron = require('node-cron');
 const path = require('path');
 const { runSpeedTest } = require('./speedtest');
-const { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb } = require('./db');
+const { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb, getDailyStats } = require('./db');
 const { DEFAULT_SERVER_KEY, FASTEST_KEY, getServerByKey, isValidSelection, listOptions, pickFastestServer } = require('./servers');
 const { DEFAULT_SCHEDULE_KEY, getCronForKey, isValidScheduleKey, listScheduleOptions } = require('./schedules');
-const { backfillSnapshots, getTrends } = require('./snapshots');
+const { backfillSnapshots, getTrends, getMonthReport } = require('./snapshots');
 const pkg = require('./package.json');
 
 const app = express();
@@ -54,6 +54,22 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/api/analytics', (req, res) => {
   res.json(getAnalytics());
+});
+
+// Month report for the Trends page: the month's stats + each of its ISO weeks (with
+// upcoming weeks as placeholders) + raw per-test points for the dot strips.
+app.get('/api/month', (req, res) => {
+  const within = req.query.within || new Date().toISOString().slice(0, 7);
+  const report = getMonthReport(within);
+  if (!report) return res.status(400).json({ error: 'Invalid month — use YYYY-MM' });
+  res.json(report);
+});
+
+// Per-day download aggregates (median/avg/count). Not used by the UI right now
+// (the heatmap was retired with the month-report redesign) — kept for future use.
+app.get('/api/daily', (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 365, 730);
+  res.json({ days, rows: getDailyStats(days) });
 });
 
 // Persisted weekly/monthly trends. `?period=month` (default) → trailing 12 months;
