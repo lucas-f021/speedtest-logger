@@ -70,6 +70,8 @@ speedtest-logger/
    `"fastest"` it TCP-latency-probes the three servers (`servers.js`) and picks the lowest.
 3. `runSpeedTest(serverId)` (`speedtest.js`) invokes **speedtest-net**, which runs the **Ookla CLI**
    (downloading the binary on first use), and returns a normalized row (Mbps converted from bytes/sec).
+   If the pinned server fails (Ookla retired the id, host unreachable), it retries once letting Ookla
+   auto-pick — one dead server degrades testing instead of breaking it.
 4. The row is written to `speed_logs` via `insertLog()`. Failures are caught and logged — the server never
    crashes on a bad test.
 5. The browser fetches the new data on its next refresh (after `Test Now`, range change, or page load).

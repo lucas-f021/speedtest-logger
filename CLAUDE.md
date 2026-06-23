@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS speed_logs (
 CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
 
 -- Key/value store for app settings:
---   selected_server = '1774' | '74553' | '29122' | 'fastest'
+--   selected_server = '4920' | '74553' | '29122' | 'fastest'
 --   schedule        = '30m' | '1h' | '2h' | '6h' | '12h' | '1d'
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -154,7 +154,7 @@ Returns `{ running, nextScheduledTest: "ISO timestamp", dbSize }` — used to dr
 
 ### `GET /api/server`
 Returns the current server selection and available options.
-Response: `{ selected: "1774" | "74553" | "29122" | "fastest", options: [{ key, name, location }, ...] }`
+Response: `{ selected: "4920" | "74553" | "29122" | "fastest", options: [{ key, name, location }, ...] }`
 
 ### `POST /api/server`
 Sets the server used for future tests. Body: `{ selection: "<key>" }` where key is one of the three server ids or `"fastest"`. Persists to the `settings` table. Returns `{ success: true, selected }`, or `400` `{ success: false, error }` for an invalid key.
@@ -174,12 +174,14 @@ Single-page app, dark theme, optimized for desktop. **Fixed-viewport dashboard:*
 
 ### Sidebar — Server Selector
 The left sidebar lists four choices and lets the user pick which Ookla server tests run against:
-- **Comcast — Boston, MA** (id 1774) — the default on first run
+- **Norwood Light — Norwood, MA** (id 4920) — the default on first run
 - **GONETSPEED — Providence, RI** (id 74553)
 - **i3 Broadband — Warren, RI** (id 29122)
 - **Fastest** — before each test, a quick TCP-latency probe of the three picks the lowest-latency one
 
-Selecting an option saves it (via `POST /api/server`) for future tests only — it does **not** trigger a test. The choice persists across restarts (stored in the `settings` table; Comcast is only the initial default). The header shows a "via …" indicator of the active server, and the log table's Server column records which server each result actually used.
+Selecting an option saves it (via `POST /api/server`) for future tests only — it does **not** trigger a test. The choice persists across restarts (stored in the `settings` table; Norwood Light is only the initial default). The header shows a "via …" indicator of the active server, and the log table's Server column records which server each result actually used.
+
+> **When a pinned server dies:** Ookla retires/renumbers servers over time. The test runner (`speedtest.js`) guards against this — if a pinned server fails (e.g. `NoServersException`), it retries once letting Ookla auto-pick the best server, so testing degrades rather than breaks. To refresh the curated list, run `speedtest -L -f json` and update the ids/hosts in `servers.js`. (The original Comcast/Boston `1774` was retired by Ookla in June 2026 and replaced with Norwood Light `4920`.)
 
 ### Sidebar — Analytics
 Below the server selector: rolling **avg / median / stdev** of download, upload, and ping for three windows — **Day (24h) / Week (7d) / Month (30d)** — fed by `GET /api/analytics`.
@@ -238,8 +240,9 @@ Period summaries are deliberately **not** drawn as a line chart — they're dist
 - Period math is all UTC; week boundaries are ISO weeks (Monday start). The in-progress period is never persisted — `GET /api/trends` computes it live so the Trends page is always current.
 
 ### Server Selection (`servers.js`)
-- A fixed registry of three vetted local servers (Comcast/Boston `1774`, GONETSPEED/Providence `74553`, i3/Warren `29122`) plus a `"fastest"` option, each with host/port for latency probing.
-- Before each test, `server.js` reads `selected_server` from settings (default Comcast). For `"fastest"`, `pickFastestServer()` does a cheap TCP-connect latency probe to all three and returns the lowest (falls back to the default if all are unreachable).
+- A fixed registry of three vetted local servers (Norwood Light/Norwood `4920`, GONETSPEED/Providence `74553`, i3/Warren `29122`) plus a `"fastest"` option, each with host/port for latency probing.
+- Before each test, `server.js` reads `selected_server` from settings (default Norwood Light). For `"fastest"`, `pickFastestServer()` does a cheap TCP-connect latency probe to all three and returns the lowest (falls back to the default if all are unreachable).
+- If the resolved server fails when the Ookla CLI runs (decommissioned id, unreachable host), `runSpeedTest()` retries once with Ookla auto-pick (no `-s`) so a single dead server can't break testing.
 - The resolved server id is passed to the runner, which hands Ookla a `-s <id>` flag to pin the test.
 
 ### Speed Test Runner (`speedtest.js`)

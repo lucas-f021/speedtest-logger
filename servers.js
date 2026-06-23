@@ -1,15 +1,18 @@
 const net = require('net');
 
 // The three vetted local Ookla servers the user can pin to.
-// Hosts/ports come from `speedtest -L -f json` and are used for the cheap
+// Hosts/ports/ids come from `speedtest -L -f json` and are used for the cheap
 // TCP-latency probe behind the "Fastest" option.
+// NOTE: Ookla decommissions/renumbers servers over time. If a test fails with
+// "NoServersException", re-run `speedtest -L -f json` and refresh the ids/hosts below.
+// (Ookla retired the old Comcast/Boston id 1774 in June 2026 → replaced with Norwood Light.)
 const SERVERS = [
-  { key: '1774',  id: 1774,  name: 'Comcast',      location: 'Boston, MA',     host: 'stosat-ndhm-01.sys.comcast.net',  port: 8080 },
-  { key: '74553', id: 74553, name: 'GONETSPEED',   location: 'Providence, RI', host: 'prvdrips-ookla01.gonetspeed.com', port: 8080 },
-  { key: '29122', id: 29122, name: 'i3 Broadband', location: 'Warren, RI',     host: 'speedtest.fullchannel.net',       port: 8080 },
+  { key: '4920',  id: 4920,  name: 'Norwood Light', location: 'Norwood, MA',    host: 'speedtest.norwoodlight.com',      port: 8080 },
+  { key: '74553', id: 74553, name: 'GONETSPEED',    location: 'Providence, RI', host: 'prvdrips-ookla01.gonetspeed.com', port: 8080 },
+  { key: '29122', id: 29122, name: 'i3 Broadband',  location: 'Warren, RI',     host: 'speedtest.fullchannel.net',       port: 8080 },
 ];
 
-const DEFAULT_SERVER_KEY = '1774'; // Comcast — factory default on first run
+const DEFAULT_SERVER_KEY = '4920'; // Norwood Light — factory default on first run
 const FASTEST_KEY = 'fastest';
 
 function getServerByKey(key) {
