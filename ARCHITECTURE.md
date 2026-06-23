@@ -48,7 +48,7 @@ speedtest-logger/
 ├── server.js        # Express app, all API routes, the re-schedulable node-cron job, daily snapshot cron, graceful shutdown
 ├── db.js            # better-sqlite3 setup + schema; query/stat/analytics + snapshot helpers; key-value settings store
 ├── speedtest.js     # wraps speedtest-net; normalizes the result; converts bytes/sec → Mbps
-│                  # (servers.js removed in v0.6.0 — tests use Ookla auto-pick, no pinning)
+├── servers.js       # UNUSED since v0.6.0 (server pinning removed; safe to delete) — tests use Ookla auto-pick
 ├── schedules.js     # registry of cron presets (30m / 1h / 2h / 6h / 12h / daily)
 ├── snapshots.js     # weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends + month-report read paths
 ├── public/
