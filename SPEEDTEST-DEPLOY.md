@@ -1,5 +1,7 @@
 # Deploy the Speedtest app to Lou's home server (as an always-on service)
 
+> 📒 **What's live vs. pushed:** see [DEPLOYMENTS.md](DEPLOYMENTS.md) — the dev↔prod sync ledger.
+
 > ✅ **ALREADY DEPLOYED (2026-06-07).** Live as the NSSM service `speedtest-logger` on port `3000`
 > (`http://192.168.50.187:3000`, also `http://frolio-central-server.local:3000`). The first-time setup
 > in §3 is done; the new piece is the one-click `scripts/deploy.bat` / `scripts/update.ps1` (committed
