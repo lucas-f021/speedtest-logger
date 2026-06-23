@@ -21,8 +21,7 @@ A self-hosted internet speed test logging application that runs on a Windows 11 
 speedtest-logger/
 ├── server.js              # Express server, all API routes, re-schedulable cron scheduler, graceful shutdown
 ├── db.js                  # SQLite setup; logs/stats/analytics + snapshot query helpers; key-value settings store
-├── speedtest.js           # Speed test runner (wraps speedtest-net; accepts a server id)
-├── servers.js             # UNUSED since v0.6.0 (server pinning removed; safe to delete) — tests use Ookla auto-pick
+├── speedtest.js           # Speed test runner (wraps speedtest-net; Ookla auto-picks the server)
 ├── schedules.js           # Cron preset registry (30m / 1h / 2h / 6h / 12h / daily)
 ├── snapshots.js           # Weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends + month-report read paths
 ├── patches/               # patch-package patches (e.g. speedtest-net arm64 support)
@@ -229,7 +228,7 @@ Period summaries are deliberately **not** drawn as a line chart — they're dist
 - Period math is all UTC; week boundaries are ISO weeks (Monday start). The in-progress period is never persisted — `GET /api/trends` computes it live so the Trends page is always current.
 
 ### Server Selection — none (Ookla auto-pick)
-- **No server pinning.** As of v0.6.0 there's no curated registry and no `selected_server` setting; `servers.js` is now unused (orphaned, safe to delete). Every test lets Ookla choose the nearest/best server for the connection's location.
+- **No server pinning.** As of v0.6.0 there's no curated registry and no `selected_server` setting; `servers.js` was deleted. Every test lets Ookla choose the nearest/best server for the connection's location.
 - This is deliberately robust to Ookla retiring/renumbering servers (the old `NoServersException` failure mode). The server actually used is captured per row (`server_*` fields) and surfaced in the UI.
 
 ### Speed Test Runner (`speedtest.js`)
