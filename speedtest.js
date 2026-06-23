@@ -1,21 +1,10 @@
 const speedTest = require('speedtest-net');
 
-// Run the test against `serverId`, but never let one bad server kill the whole test:
-// if a pinned server fails (e.g. Ookla decommissioned it → "NoServersException", or it's
-// temporarily unreachable), retry once letting Ookla auto-select its best server.
-async function runWithFallback(serverId) {
-  const base = { acceptLicense: true, acceptGdpr: true };
-  if (!serverId) return speedTest(base);
-  try {
-    return await speedTest({ ...base, serverId });
-  } catch (err) {
-    console.warn(`[${new Date().toISOString()}] Pinned server ${serverId} failed (${err.message}); retrying with Ookla auto-pick`);
-    return speedTest(base);
-  }
-}
-
-async function runSpeedTest(serverId) {
-  const result = await runWithFallback(serverId);
+// No server pinning: Ookla auto-selects the best server for our location on every run.
+// This is immune to Ookla decommissioning/renumbering individual servers (the old cause of
+// "NoServersException"). The server actually used is recorded per row (server_* fields below).
+async function runSpeedTest() {
+  const result = await speedTest({ acceptLicense: true, acceptGdpr: true });
 
   const toMbps = (bytesPerSec) => bytesPerSec
     ? Math.round((bytesPerSec * 8) / 1_000_000 * 100) / 100

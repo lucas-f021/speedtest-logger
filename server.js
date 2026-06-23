@@ -3,7 +3,6 @@ const cron = require('node-cron');
 const path = require('path');
 const { runSpeedTest } = require('./speedtest');
 const { insertLog, getLogs, getLatest, getStats, getAnalytics, getDbSize, getSetting, setSetting, closeDb, getDailyStats } = require('./db');
-const { DEFAULT_SERVER_KEY, FASTEST_KEY, getServerByKey, isValidSelection, listOptions, pickFastestServer } = require('./servers');
 const { DEFAULT_SCHEDULE_KEY, getCronForKey, isValidScheduleKey, listScheduleOptions } = require('./schedules');
 const { backfillSnapshots, getTrends, getMonthReport } = require('./snapshots');
 const pkg = require('./package.json');
@@ -92,23 +91,6 @@ app.get('/api/version', (req, res) => {
   res.json({ version: pkg.version });
 });
 
-app.get('/api/server', (req, res) => {
-  res.json({
-    selected: getSelectedServerKey(),
-    options: listOptions(),
-  });
-});
-
-app.post('/api/server', (req, res) => {
-  const { selection } = req.body || {};
-  if (!isValidSelection(selection)) {
-    return res.status(400).json({ success: false, error: 'Invalid server selection' });
-  }
-  setSetting('selected_server', selection);
-  console.log(`[${new Date().toISOString()}] Server selection changed to "${selection}"`);
-  res.json({ success: true, selected: selection });
-});
-
 app.get('/api/schedule', (req, res) => {
   res.json({ selected: getScheduleKey(), options: listScheduleOptions() });
 });
@@ -126,32 +108,15 @@ app.post('/api/schedule', (req, res) => {
 
 // --- Test runner ---
 
-function getSelectedServerKey() {
-  const stored = getSetting('selected_server');
-  return isValidSelection(stored) ? stored : DEFAULT_SERVER_KEY;
-}
-
-// Resolve the saved selection into a concrete server to test against.
-// For "Fastest", probe latency and pick the lowest right now.
-async function resolveTargetServer() {
-  const selection = getSelectedServerKey();
-  if (selection === FASTEST_KEY) {
-    const server = await pickFastestServer();
-    console.log(`[${new Date().toISOString()}] Fastest mode picked ${server.name} (${server.location})`);
-    return server;
-  }
-  return getServerByKey(selection) || getServerByKey(DEFAULT_SERVER_KEY);
-}
-
 async function executeTest(source) {
   testRunning = true;
   console.log(`[${new Date().toISOString()}] Speed test starting (${source})`);
   try {
-    const target = await resolveTargetServer();
-    const data = await runSpeedTest(target.id);
+    // No server pinning — Ookla auto-selects the nearest/best server for our location.
+    const data = await runSpeedTest();
     const timestamp = new Date().toISOString().replace('T', ' ').replace('Z', '');
     insertLog({ ...data, timestamp, source });
-    console.log(`[${new Date().toISOString()}] Speed test complete — ↓${data.download} Mbps ↑${data.upload} Mbps ping ${data.ping}ms`);
+    console.log(`[${new Date().toISOString()}] Speed test complete (via ${data.server_name ?? '?'}) — ↓${data.download} Mbps ↑${data.upload} Mbps ping ${data.ping}ms`);
     return data;
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Speed test failed:`, err.message);

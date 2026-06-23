@@ -22,7 +22,7 @@ speedtest-logger/
 ├── server.js              # Express server, all API routes, re-schedulable cron scheduler, graceful shutdown
 ├── db.js                  # SQLite setup; logs/stats/analytics + snapshot query helpers; key-value settings store
 ├── speedtest.js           # Speed test runner (wraps speedtest-net; accepts a server id)
-├── servers.js             # Vetted server registry + "Fastest" latency picker
+│                          # (servers.js removed in v0.6.0 — tests now use Ookla's auto-pick, no pinning)
 ├── schedules.js           # Cron preset registry (30m / 1h / 2h / 6h / 12h / daily)
 ├── snapshots.js           # Weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends + month-report read paths
 ├── patches/               # patch-package patches (e.g. speedtest-net arm64 support)
@@ -75,8 +75,9 @@ CREATE TABLE IF NOT EXISTS speed_logs (
 CREATE INDEX IF NOT EXISTS idx_timestamp ON speed_logs(timestamp);
 
 -- Key/value store for app settings:
---   selected_server = '4920' | '74553' | '29122' | 'fastest'
---   schedule        = '30m' | '1h' | '2h' | '6h' | '12h' | '1d'
+--   schedule = '30m' | '1h' | '2h' | '6h' | '12h' | '1d'
+-- (selected_server was removed in v0.6.0 — tests use Ookla's auto-pick. Old DBs may still
+--  have a stale selected_server row; it's simply ignored.)
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -152,12 +153,8 @@ Response: `{ days, rows: [{ date: 'YYYY-MM-DD', count, median, avg }] }` (downlo
 ### `GET /api/status`
 Returns `{ running, nextScheduledTest: "ISO timestamp", dbSize }` — used to drive the running indicator.
 
-### `GET /api/server`
-Returns the current server selection and available options.
-Response: `{ selected: "4920" | "74553" | "29122" | "fastest", options: [{ key, name, location }, ...] }`
-
-### `POST /api/server`
-Sets the server used for future tests. Body: `{ selection: "<key>" }` where key is one of the three server ids or `"fastest"`. Persists to the `settings` table. Returns `{ success: true, selected }`, or `400` `{ success: false, error }` for an invalid key.
+> **No server-selection API** (removed in v0.6.0). Tests always run against Ookla's
+> auto-selected server; the server actually used is recorded per row and shown in the UI.
 
 ### `GET /api/schedule` · `POST /api/schedule`
 Get/set how often the scheduled test runs. `GET` → `{ selected, options: [{key,label}] }`. `POST` body
@@ -170,21 +167,13 @@ Returns `{ version }` read from `package.json` (shown in the sidebar footer).
 ## Frontend UI Requirements
 
 ### Layout
-Single-page app, dark theme, optimized for desktop. **Fixed-viewport dashboard:** the page itself does not scroll — a left **sidebar** holds the server selector, and the main area splits the remaining height between the chart and a **scrollable** log table (only the table body scrolls; its header stays pinned). Falls back to normal vertical scrolling on narrow/phone widths.
+Single-page app, dark theme, optimized for desktop. **Fixed-viewport dashboard:** the page itself does not scroll — a left **sidebar** holds Analytics + Schedule + the Trends link, and the main area splits the remaining height between the chart and a **scrollable** log table (only the table body scrolls; its header stays pinned). Falls back to normal vertical scrolling on narrow/phone widths.
 
-### Sidebar — Server Selector
-The left sidebar lists four choices and lets the user pick which Ookla server tests run against:
-- **Norwood Light — Norwood, MA** (id 4920) — the default on first run
-- **GONETSPEED — Providence, RI** (id 74553)
-- **i3 Broadband — Warren, RI** (id 29122)
-- **Fastest** — before each test, a quick TCP-latency probe of the three picks the lowest-latency one
-
-Selecting an option saves it (via `POST /api/server`) for future tests only — it does **not** trigger a test. The choice persists across restarts (stored in the `settings` table; Norwood Light is only the initial default). The header shows a "via …" indicator of the active server, and the log table's Server column records which server each result actually used.
-
-> **When a pinned server dies:** Ookla retires/renumbers servers over time. The test runner (`speedtest.js`) guards against this — if a pinned server fails (e.g. `NoServersException`), it retries once letting Ookla auto-pick the best server, so testing degrades rather than breaks. To refresh the curated list, run `speedtest -L -f json` and update the ids/hosts in `servers.js`. (The original Comcast/Boston `1774` was retired by Ookla in June 2026 and replaced with Norwood Light `4920`.)
+### Server selection — none (auto-pick)
+As of **v0.6.0 there is no server picker**. Every test runs against **Ookla's auto-selected** nearest/best server for the connection's location (the runner passes no `-s` flag). This is intentionally immune to Ookla decommissioning/renumbering individual servers — the old cause of `NoServersException` outages (e.g. Comcast/Boston id 1774, retired June 2026). The header shows a "via …" indicator of the server the **latest** test used (from `GET /api/logs/latest`), and the log table's Server column records the server each result actually used — so the auto-pick is always transparent.
 
 ### Sidebar — Analytics
-Below the server selector: rolling **avg / median / stdev** of download, upload, and ping for three windows — **Day (24h) / Week (7d) / Month (30d)** — fed by `GET /api/analytics`.
+Rolling **avg / median / stdev** of download, upload, and ping for three windows — **Day (24h) / Week (7d) / Month (30d)** — fed by `GET /api/analytics`.
 
 ### Sidebar — Schedule & version
 A dropdown sets how often the scheduled test runs (30m / 1h / 2h / 6h / 12h / daily), backed by `GET|POST /api/schedule`; the choice persists and is applied live. The app version (`vX.Y.Z`, from `package.json`) is pinned at the bottom of the sidebar. A **Reports → Trends** link opens the standalone Trends page (`/trends.html`).
@@ -239,14 +228,12 @@ Period summaries are deliberately **not** drawn as a line chart — they're dist
 - Idempotent: re-running overwrites the same `(period_type, period_key)` rows, so missed runs (downtime) self-heal on the next tick and a period is persisted within a day of completing.
 - Period math is all UTC; week boundaries are ISO weeks (Monday start). The in-progress period is never persisted — `GET /api/trends` computes it live so the Trends page is always current.
 
-### Server Selection (`servers.js`)
-- A fixed registry of three vetted local servers (Norwood Light/Norwood `4920`, GONETSPEED/Providence `74553`, i3/Warren `29122`) plus a `"fastest"` option, each with host/port for latency probing.
-- Before each test, `server.js` reads `selected_server` from settings (default Norwood Light). For `"fastest"`, `pickFastestServer()` does a cheap TCP-connect latency probe to all three and returns the lowest (falls back to the default if all are unreachable).
-- If the resolved server fails when the Ookla CLI runs (decommissioned id, unreachable host), `runSpeedTest()` retries once with Ookla auto-pick (no `-s`) so a single dead server can't break testing.
-- The resolved server id is passed to the runner, which hands Ookla a `-s <id>` flag to pin the test.
+### Server Selection — none (Ookla auto-pick)
+- **No server pinning.** As of v0.6.0 there's no curated registry and no `selected_server` setting; `servers.js` was removed. Every test lets Ookla choose the nearest/best server for the connection's location.
+- This is deliberately robust to Ookla retiring/renumbering servers (the old `NoServersException` failure mode). The server actually used is captured per row (`server_*` fields) and surfaced in the UI.
 
 ### Speed Test Runner (`speedtest.js`)
-- `runSpeedTest(serverId)` wraps `speedtest-net`, passing the optional server id, and returns a normalized result object.
+- `runSpeedTest()` wraps `speedtest-net` with no server id (Ookla auto-pick) and returns a normalized result object.
 - Handle errors gracefully — if the test fails (network down, timeout), log the error to console but do NOT crash the server. Optionally insert a row with null values and an error note.
 - Convert speeds from bytes/sec (speedtest-net default) to Mbps: `(bytes * 8) / 1_000_000`.
 

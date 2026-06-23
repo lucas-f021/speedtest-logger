@@ -12,7 +12,7 @@ services — everything runs in one process on a LAN.
   │ index/app │ ◄─────── │     └─ static public/     ├─► speedtest.js ─► speedtest-net ─► Ookla CLI   │
   └───────────┘  JSON    │                           │                     (downloads/runs binary)   │
                          │   node-cron (re-schedulable) ─► runScheduledTest ─► executeTest ──────────┤
-                         │                           └─► servers.js (pick server) / schedules.js      │
+                         │                           └─► schedules.js (cron cadence)                  │
                          └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,7 +48,7 @@ speedtest-logger/
 ├── server.js        # Express app, all API routes, the re-schedulable node-cron job, daily snapshot cron, graceful shutdown
 ├── db.js            # better-sqlite3 setup + schema; query/stat/analytics + snapshot helpers; key-value settings store
 ├── speedtest.js     # wraps speedtest-net; normalizes the result; converts bytes/sec → Mbps
-├── servers.js       # registry of 3 vetted Ookla servers + a "Fastest" TCP-latency picker
+│                  # (servers.js removed in v0.6.0 — tests use Ookla auto-pick, no pinning)
 ├── schedules.js     # registry of cron presets (30m / 1h / 2h / 6h / 12h / daily)
 ├── snapshots.js     # weekly/monthly rollups: ISO-week/month math, idempotent backfill, trends + month-report read paths
 ├── public/
@@ -59,19 +59,17 @@ speedtest-logger/
 │   └── trends.js    # Trends logic (no chart lib): stat boxes + inline-SVG dot strips
 ├── patches/         # patch-package patch (speedtest-net arm64)
 ├── scripts/         # update.ps1 (rollback-safe deploy) + deploy.bat (one-click wrapper)
-├── package.json     # deps + the decompress-tarxz override; version is the app version (v0.5.0)
+├── package.json     # deps + the decompress-tarxz override; version is the app version (v0.6.0)
 └── speedtest.db     # SQLite file, created on first run (gitignored)
 ```
 
 ## Data flow (one scheduled test)
 1. **node-cron** fires `runScheduledTest()` on the configured cadence (or once on startup if the last test
    was >1h ago). A `testRunning` mutex prevents concurrent tests.
-2. `executeTest()` calls `resolveTargetServer()` — reads `selected_server` from the `settings` table; for
-   `"fastest"` it TCP-latency-probes the three servers (`servers.js`) and picks the lowest.
-3. `runSpeedTest(serverId)` (`speedtest.js`) invokes **speedtest-net**, which runs the **Ookla CLI**
-   (downloading the binary on first use), and returns a normalized row (Mbps converted from bytes/sec).
-   If the pinned server fails (Ookla retired the id, host unreachable), it retries once letting Ookla
-   auto-pick — one dead server degrades testing instead of breaking it.
+2. `executeTest()` runs the test directly — there's no server selection (removed in v0.6.0).
+3. `runSpeedTest()` (`speedtest.js`) invokes **speedtest-net** with no pinned server, so the **Ookla CLI**
+   (downloading the binary on first use) auto-selects the nearest/best server for our location and
+   returns a normalized row (Mbps converted from bytes/sec). Immune to Ookla retiring individual servers.
 4. The row is written to `speed_logs` via `insertLog()`. Failures are caught and logged — the server never
    crashes on a bad test.
 5. The browser fetches the new data on its next refresh (after `Test Now`, range change, or page load).
@@ -86,14 +84,14 @@ speedtest-logger/
 - `GET /api/month?within=YYYY-MM` (the Trends month report: month stats + its ISO weeks incl. upcoming placeholders + raw per-test points for the dot strips)
 - `GET /api/daily?days=365` (per-day download median/avg/count; currently unused by the UI)
 - `GET /api/status` (running flag, next scheduled test, db size) · `GET /api/version`
-- `GET|POST /api/server` (server selector) · `GET|POST /api/schedule` (cron cadence)
+- `GET|POST /api/schedule` (cron cadence) — no server-selection API (tests use Ookla auto-pick)
 
 ## Data model (`speedtest.db`)
 - **`speed_logs`** — `id, timestamp (UTC), download, upload, ping, jitter, server_name, server_location,
   isp, result_url, source ('scheduled' | 'manual')`; index on `timestamp`. Plus richer per-test capture
   (added additively via `db.js` `ensureColumns()`): `packet_loss, bytes_downloaded, bytes_uploaded,
   elapsed_download, elapsed_upload, external_ip, is_vpn, server_id/host/port/ip/country`.
-- **`settings`** — `key, value` key-value store (`selected_server`, `schedule`).
+- **`settings`** — `key, value` key-value store (`schedule`; the old `selected_server` key was retired in v0.6.0).
 - **`snapshots`** — persisted weekly/monthly rollups: `period_type ('week'|'month'), period_key
   ('2026-W23'|'2026-06'), period_start/period_end (UTC), count,
   {download,upload,ping}_{avg,median,stdev,min,p25,p75,max}, packet_loss_avg, bytes_total`;
